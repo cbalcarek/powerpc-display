@@ -5,6 +5,7 @@ g4/*.app/
 g4/ppcdisplay
 g4/g4display
 g4/.m1host
+g4/.m1hosts
 test/test_codec
 *.iso
 releases/

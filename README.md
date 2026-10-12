@@ -181,8 +181,9 @@ the source):
 - **Build Mac App.command** → `releases/PowerPC-Display-Mac.zip`
 - **Build PowerPC Display.command** on Tiger → `PowerPC-Display-Tiger.zip`,
   sent automatically to `releases/` on the Apple Silicon Mac when
-  **Share with PowerPC Mac.command** is running there (the update script
-  remembers its address).
+  **Share with PowerPC Mac.command** is running there. Builds from the UTM
+  disc know where to send it (the disc lists the Mac's addresses); builds
+  via `update.sh` remember the address that worked.
 
 The Tiger zip contains the all-chips app (G3, G4, G5). The Mac app is signed
 with a local certificate, so on other Macs it opens via Privacy & Security ›
