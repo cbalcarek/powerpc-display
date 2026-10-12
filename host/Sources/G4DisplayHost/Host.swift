@@ -73,6 +73,9 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     // --- per-connection (connection thread) ---
     private var W = 0, H = 0, depth = 32, slots = 0, widthMM = 0
     private var peerName = ""
+    /// where the PowerPC Mac was last reached: tried first on reconnect (e.g.
+    /// after switching Extend/Mirror), before asking Bonjour again
+    private var lastEndpoint: (host: String, port: UInt16, name: String)?
     private var vdisplayName = ""
     private var vdisplay: G4VirtualDisplay?
     private var displayID: CGDirectDisplayID = 0
@@ -156,7 +159,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
             if !isEnabled { close(sock); continue }
             announced = false
             guard let hello = readHello(sock) else {
-                log("bad hello"); close(sock); sleep(1); continue
+                log("bad hello"); lastEndpoint = nil; close(sock); sleep(1); continue
             }
             (W, H, depth, slots, widthMM) = hello
             log("\(name) connected: \(W)x\(H), \(depth)-bit, \(slots) cache tiles\(widthMM > 0 ? ", \(widthMM) mm wide" : "")")
@@ -227,6 +230,13 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
             post(.searching(addr))
             return nil
         }
+        if let ep = lastEndpoint {
+            if let s = connectTCP(host: ep.host, port: ep.port, timeoutMs: 1000) {
+                log("reconnected to \"\(ep.name)\" at \(ep.host):\(ep.port)")
+                return (s, ep.name)
+            }
+            lastEndpoint = nil      // gone or moved: find it again with Bonjour
+        }
         var found = g4_found()
         let rc: Int32
         if let wanted = cfg.g4Name {
@@ -256,6 +266,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
                 if !host.isEmpty, let s = connectTCP(host: host, port: found.port) {
                     log("found \"\(name)\" at \(host):\(found.port) (system resolver)")
                     lastDiscoveryNote = ""
+                    lastEndpoint = (host, found.port, name)
                     return (s, name)
                 }
                 note("found \"\(name)\" (\(host)) but could not look up its address (error \(found.dns_error))",
@@ -268,15 +279,20 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         if lastDiscoveryNote.isEmpty { log("found \"\(name)\" at \(ip):\(found.port), connecting…") }
         // last resort: a VM in UTM's Emulated VLAN mode advertises an internal
         // address (10.0.2.x) the Mac can't reach; its port forward is on localhost
-        guard let s = connectTCP(host: ip, port: found.port, ifindex: found.ifindex)
-                ?? connectTCP(host: ip, port: found.port)
-                ?? connectTCP(host: "127.0.0.1", port: found.port, timeoutMs: 1000) else {
+        var via = ip
+        var sock = connectTCP(host: ip, port: found.port, ifindex: found.ifindex) ?? connectTCP(host: ip, port: found.port)
+        if sock == nil {
+            sock = connectTCP(host: "127.0.0.1", port: found.port, timeoutMs: 1000)
+            via = "127.0.0.1"
+        }
+        guard let s = sock else {
             note("found \"\(name)\" at \(ip):\(found.port) but could not connect",
                  "Found “\(name)” at \(ip), but the connection was refused or blocked. Check that nothing between the two Macs blocks port \(found.port).")
             return nil
         }
-        log("connected to \"\(name)\" at \(ip):\(found.port)")
+        log("connected to \"\(name)\" at \(via):\(found.port)")
         lastDiscoveryNote = ""
+        lastEndpoint = (via, found.port, name)
         return (s, name)
     }
 

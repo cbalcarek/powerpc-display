@@ -38,19 +38,23 @@ def rounded_mask(size, radius):
     return m
 
 
-def draw_icon(n=S):
+def draw_icon(n=S, full_bleed=False):
     k = n / 1024
     img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
 
-    # background tile (macOS icon grid: ~824 px tile centred in 1024)
-    tile = int(824 * k)
-    off = (n - tile) // 2
-    bg = vgradient((tile, tile), (38, 99, 235, 255), (14, 165, 233, 255))
-    shadow = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    ImageDraw.Draw(shadow).rounded_rectangle(
-        [off, off + int(12 * k), off + tile, off + tile + int(12 * k)], radius=int(185 * k), fill=(0, 0, 0, 90))
-    img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(int(18 * k))))
-    img.paste(bg, (off, off), rounded_mask((tile, tile), int(185 * k)))
+    if full_bleed:
+        # opaque square, no shadow: macOS 26+ applies its own rounded mask
+        img.paste(vgradient((n, n), (38, 99, 235, 255), (14, 165, 233, 255)), (0, 0))
+    else:
+        # background tile (classic macOS icon grid: ~824 px tile centred in 1024)
+        tile = int(824 * k)
+        off = (n - tile) // 2
+        bg = vgradient((tile, tile), (38, 99, 235, 255), (14, 165, 233, 255))
+        shadow = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+        ImageDraw.Draw(shadow).rounded_rectangle(
+            [off, off + int(12 * k), off + tile, off + tile + int(12 * k)], radius=int(185 * k), fill=(0, 0, 0, 90))
+        img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(int(18 * k))))
+        img.paste(bg, (off, off), rounded_mask((tile, tile), int(185 * k)))
 
     d = ImageDraw.Draw(img)
 
@@ -105,6 +109,17 @@ def render(size):
     return draw_icon(S).resize((size, size), Image.LANCZOS)
 
 
+def full_bleed_big():
+    # Modern macOS (26+) frames icons that aren't a full square in a grey
+    # tile. So the modern icon is an opaque square; the artwork is enlarged a
+    # little (crop 56..968) to fill it, keeping clear of the rounded corners.
+    return draw_icon(S, full_bleed=True).crop((56, 56, 968, 968)).resize((S, S), Image.LANCZOS)
+
+
+def render_modern(size):
+    return full_bleed_big().resize((size, size), Image.LANCZOS)
+
+
 def png_bytes(im):
     from io import BytesIO
     b = BytesIO()
@@ -150,15 +165,18 @@ def main():
     big = draw_icon(S)
     big.save(OUT / "AppIcon-1024.png")
 
+    fb = full_bleed_big()
+    fb.save(OUT / "AppIcon-modern-1024.png")
+    rm = lambda n: fb.resize((n, n), Image.LANCZOS)
     modern = [
-        (b"ic07", png_bytes(render(128))),
-        (b"ic08", png_bytes(render(256))),
-        (b"ic09", png_bytes(render(512))),
-        (b"ic10", png_bytes(big)),
-        (b"ic11", png_bytes(render(32))),
-        (b"ic12", png_bytes(render(64))),
-        (b"ic13", png_bytes(render(256))),
-        (b"ic14", png_bytes(render(512))),
+        (b"ic07", png_bytes(rm(128))),
+        (b"ic08", png_bytes(rm(256))),
+        (b"ic09", png_bytes(rm(512))),
+        (b"ic10", png_bytes(fb)),
+        (b"ic11", png_bytes(rm(32))),
+        (b"ic12", png_bytes(rm(64))),
+        (b"ic13", png_bytes(rm(256))),
+        (b"ic14", png_bytes(rm(512))),
     ]
     write_icns(OUT / "AppIcon.icns", modern)
 

@@ -18,9 +18,11 @@ typedef struct {
     int         done;      /* step finished (success) */
     int         failed;
     int         err;
-    /* browse result */
+    /* browse result (the same Mac can show up once per network interface) */
     char        name[256], regtype[256], domain[256];
     uint32_t    ifindex;
+    uint32_t    ifs[8];
+    int         nifs;
     /* resolve result */
     char        host[1025];
     uint16_t    port;
@@ -64,8 +66,13 @@ static void DNSSD_API browse_cb(DNSServiceRef ref, DNSServiceFlags flags, uint32
     disc_ctx *c = (disc_ctx *)ctx;
     (void)ref;
     if (err != kDNSServiceErr_NoError) { c->failed = 1; c->err = err; return; }
-    if (!(flags & kDNSServiceFlagsAdd) || c->done) return;
+    if (!(flags & kDNSServiceFlagsAdd)) return;
     if (c->filter && strcmp(c->filter, name) != 0) return;
+    if (c->done) {                         /* same Mac on another interface: remember it */
+        if (!strcmp(c->name, name) && c->nifs < 8) c->ifs[c->nifs++] = ifindex;
+        return;
+    }
+    c->ifs[0] = ifindex; c->nifs = 1;
     snprintf(c->name, sizeof c->name, "%s", name);
     snprintf(c->regtype, sizeof c->regtype, "%s", regtype);
     snprintf(c->domain, sizeof c->domain, "%s", domain);
@@ -114,20 +121,44 @@ int g4_discover(const char *name_filter, int timeout_ms, g4_found *out)
     e = DNSServiceBrowse(&ref, 0, 0, G4_BONJOUR_TYPE, NULL, browse_cb, &c);
     if (e != kDNSServiceErr_NoError) { out->dns_error = e; return -1; }
     rc = pump(ref, &c, deadline);
+    if (rc == 0) {
+        /* collect the same Mac on other interfaces for a moment */
+        long long until = now_ms() + 300;
+        int fd = DNSServiceRefSockFD(ref);
+        while (fd >= 0 && now_ms() < until) {
+            fd_set rf;
+            struct timeval tv = { 0, 50000 };
+            FD_ZERO(&rf); FD_SET(fd, &rf);
+            if (select(fd + 1, &rf, NULL, NULL, &tv) > 0) DNSServiceProcessResult(ref);
+        }
+    }
     DNSServiceRefDeallocate(ref);
     if (rc) { out->dns_error = c.err; return -1; }
     snprintf(out->name, sizeof out->name, "%s", c.name);
     out->ifindex = c.ifindex;
 
-    /* 2. resolve name -> host + port */
+    /* 2. resolve name -> host + port: try each interface it was seen on,
+       then any interface (a stale or one-way interface can leave one
+       resolve unanswered) */
     out->failed_step = 2;
-    c.done = c.failed = 0; c.err = 0;
-    deadline = now_ms() + 4000;
-    e = DNSServiceResolve(&ref, 0, c.ifindex, c.name, c.regtype, c.domain, resolve_cb, &c);
-    if (e != kDNSServiceErr_NoError) { out->dns_error = e; return -1; }
-    rc = pump(ref, &c, deadline);
-    DNSServiceRefDeallocate(ref);
-    if (rc) { out->dns_error = c.err; return -1; }
+    {
+        int i, ok = 0;
+        uint32_t tries[9];
+        int ntries = 0;
+        for (i = 0; i < c.nifs; i++) tries[ntries++] = c.ifs[i];
+        tries[ntries++] = 0;
+        for (i = 0; i < ntries && !ok; i++) {
+            c.done = c.failed = 0; c.err = 0;
+            deadline = now_ms() + (i == ntries - 1 ? 3000 : 1500);
+            e = DNSServiceResolve(&ref, 0, tries[i], c.name, c.regtype, c.domain, resolve_cb, &c);
+            if (e != kDNSServiceErr_NoError) { out->dns_error = e; continue; }
+            rc = pump(ref, &c, deadline);
+            DNSServiceRefDeallocate(ref);
+            if (rc == 0) { ok = 1; if (tries[i]) c.ifindex = tries[i]; out->ifindex = c.ifindex; }
+            else out->dns_error = c.err;
+        }
+        if (!ok) return -1;
+    }
     snprintf(out->host, sizeof out->host, "%s", c.host);
     out->port = c.port;
 
