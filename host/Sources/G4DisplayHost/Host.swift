@@ -248,6 +248,16 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         let host = cString(&found.host)
 
         if rc != 0 {
+            // Bonjour saw it but couldn't finish the lookup: a VM in UTM's
+            // Emulated VLAN mode is reachable through UTM's port forward on
+            // this Mac, so try that before reporting a problem
+            if found.failed_step >= 2,
+               let s = connectTCP(host: "127.0.0.1", port: UInt16(G4_PORT), timeoutMs: 500) {
+                log("found \"\(name)\"; Bonjour lookup failed, connected through 127.0.0.1:\(G4_PORT) (UTM port forward)")
+                lastDiscoveryNote = ""
+                lastEndpoint = ("127.0.0.1", UInt16(G4_PORT), name)
+                return (s, name)
+            }
             switch found.failed_step {
             case 1 where found.dns_error == 0:
                 // nothing on the network yet: normal while the PowerPC Mac isn't running
