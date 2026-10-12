@@ -38,13 +38,17 @@ def rounded_mask(size, radius):
     return m
 
 
-def draw_icon(n=S, full_bleed=False):
+def draw_icon(n=S, full_bleed=False, layer=None):
+    """layer: None = whole icon, "bg" = background only, "fg" = artwork only (transparent)"""
     k = n / 1024
     img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
 
     if full_bleed:
         # opaque square, no shadow: macOS 26+ applies its own rounded mask
-        img.paste(vgradient((n, n), (38, 99, 235, 255), (14, 165, 233, 255)), (0, 0))
+        if layer != "fg":
+            img.paste(vgradient((n, n), (38, 99, 235, 255), (14, 165, 233, 255)), (0, 0))
+        if layer == "bg":
+            return img
     else:
         # background tile (classic macOS icon grid: ~824 px tile centred in 1024)
         tile = int(824 * k)
@@ -116,6 +120,28 @@ def full_bleed_big():
     return draw_icon(S, full_bleed=True).crop((56, 56, 968, 968)).resize((S, S), Image.LANCZOS)
 
 
+def write_icon_composer():
+    """AppIcon.icon: the Icon Composer format macOS 26 wants (compiled by
+    Xcode's actool in build-app.sh). Two layers: background and artwork."""
+    import json
+    d = OUT / "AppIcon.icon"
+    (d / "Assets").mkdir(parents=True, exist_ok=True)
+    crop = lambda im: im.crop((56, 56, 968, 968)).resize((S, S), Image.LANCZOS)
+    crop(draw_icon(S, full_bleed=True, layer="bg")).save(d / "Assets" / "background.png")
+    crop(draw_icon(S, full_bleed=True, layer="fg")).save(d / "Assets" / "display.png")
+    spec = {
+        "fill": "automatic",
+        "groups": [
+            {"layers": [{"image-name": "display.png", "name": "display"}],
+             "shadow": {"kind": "neutral", "opacity": 0.5},
+             "translucency": {"enabled": False, "value": 0.5}},
+            {"layers": [{"image-name": "background.png", "name": "background"}]},
+        ],
+        "supported-platforms": {"squares": "shared"},
+    }
+    (d / "icon.json").write_text(json.dumps(spec, indent=2) + "\n")
+
+
 def render_modern(size):
     return full_bleed_big().resize((size, size), Image.LANCZOS)
 
@@ -179,6 +205,7 @@ def main():
         (b"ic14", png_bytes(rm(512))),
     ]
     write_icns(OUT / "AppIcon.icns", modern)
+    write_icon_composer()
 
     tiger = []
     tiger += classic(render(128), b"it32", b"t8mk", prefix=b"\0\0\0\0")

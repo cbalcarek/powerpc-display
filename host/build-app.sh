@@ -13,6 +13,37 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/PowerPCDisplay"
 [ -f ../icon/AppIcon.icns ] && cp ../icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
+# macOS 26 frames app icons in grey unless they come from Xcode's Icon
+# Composer format. Compile icon/AppIcon.icon with Xcode's actool if it's
+# installed (any Xcode 26 in /Applications); otherwise keep the .icns above.
+ICON_NAME_KEY=""
+if [ -d ../icon/AppIcon.icon ]; then
+    ACTOOL_OK=""
+    for DEV in "" /Applications/Xcode*.app/Contents/Developer; do
+        [ -n "$DEV" ] && [ ! -d "$DEV" ] && continue
+        TMPI="$(mktemp -d)"
+        if DEVELOPER_DIR="${DEV:-$(xcode-select -p 2>/dev/null)}" xcrun actool ../icon/AppIcon.icon \
+               --compile "$TMPI" --platform macosx --minimum-deployment-target 14.0 \
+               --app-icon AppIcon --output-partial-info-plist "$TMPI/partial.plist" \
+               --output-format human-readable-text >"$TMPI/log.txt" 2>&1 \
+           && [ -f "$TMPI/Assets.car" ]; then
+            cp "$TMPI/Assets.car" "$APP/Contents/Resources/"
+            [ -f "$TMPI/AppIcon.icns" ] && cp "$TMPI/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+            ICON_NAME_KEY="    <key>CFBundleIconName</key>           <string>AppIcon</string>"
+            ACTOOL_OK=1
+            echo "App icon compiled with Xcode's actool (macOS 26 style)."
+            rm -rf "$TMPI"
+            break
+        fi
+        LASTLOG="$(cat "$TMPI/log.txt" 2>/dev/null | head -5)"
+        rm -rf "$TMPI"
+    done
+    if [ -z "$ACTOOL_OK" ]; then
+        echo "Note: no Xcode 26 actool found, so macOS 26 may show the icon in a grey frame."
+        [ -n "$LASTLOG" ] && echo "$LASTLOG"
+    fi
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -23,9 +54,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key>        <string>PowerPC Display</string>
     <key>CFBundleExecutable</key>         <string>PowerPCDisplay</string>
     <key>CFBundleIconFile</key>           <string>AppIcon</string>
+$ICON_NAME_KEY
     <key>CFBundlePackageType</key>        <string>APPL</string>
-    <key>CFBundleShortVersionString</key> <string>0.7</string>
-    <key>CFBundleVersion</key>            <string>7</string>
+    <key>CFBundleShortVersionString</key> <string>0.8</string>
+    <key>CFBundleVersion</key>            <string>8</string>
     <key>LSMinimumSystemVersion</key>     <string>14.0</string>
     <!-- macOS local-network privacy: required to find the G4 with Bonjour -->
     <key>NSLocalNetworkUsageDescription</key>
