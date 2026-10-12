@@ -25,6 +25,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         var maxInFlight: UInt32 = 2
         var verbose = false
         var mirror = false                     // show the main display instead of a new one
+        var smoothVideo = true                 // video regions as 4:2:2 (half the data, softer)
     }
 
     enum Status: Equatable {
@@ -54,6 +55,9 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     private var _enabled = true
     private var _fps: Int
     private var _mirror: Bool
+    private var _smoothVideo: Bool
+    private var clientYUV = false              // the connected client can decode 4:2:2 rects
+    private var refreshScheduled = false
     private var _stream: SCStream?
     private var _scConfig: SCStreamConfiguration?
     private let wake = DispatchSemaphore(value: 0)
@@ -83,12 +87,14 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     // --- stats (encQ) ---
     private var statT0 = nowMs()
     private var statFrames = 0, statBytes = 0, statRaw = 0, statBlocked = 0, statCopies = 0, statHits = 0
+    private var statYuv = 0, statRefresh = 0
     private var statRtt = 0.0, statRttN = 0
 
     init(config: Config) {
         cfg = config
         _fps = config.fps
         _mirror = config.mirror
+        _smoothVideo = config.smoothVideo
         super.init()
     }
 
@@ -114,6 +120,19 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     }
 
     var isMirror: Bool { lock.lock(); defer { lock.unlock() }; return _mirror }
+    var smoothVideo: Bool { lock.lock(); defer { lock.unlock() }; return _smoothVideo }
+
+    /// Send video regions as 4:2:2 YCbCr: half the data for video, slightly
+    /// softer colour there. Applies immediately; text and still areas stay exact.
+    func setSmoothVideo(_ on: Bool) {
+        lock.lock(); _smoothVideo = on; lock.unlock()
+        encQ.async {
+            guard let e = self.enc else { return }
+            g4enc_set_yuv(e, on && self.clientYUV ? 1 : 0)
+            self.pending = true      // re-encode so video tiles become exact if turned off
+            self.trySend()
+        }
+    }
 
     /// Switch between extending (a new virtual display) and mirroring the main
     /// display. Applied by dropping the connection; the G4 reconnects at once.
@@ -161,7 +180,8 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
             guard let hello = readHello(sock) else {
                 log("bad hello"); lastEndpoint = nil; close(sock); sleep(1); continue
             }
-            (W, H, depth, slots, widthMM) = hello
+            (W, H, depth, slots, widthMM) = (hello.0, hello.1, hello.2, hello.3, hello.4)
+            let helloFlags = hello.5
             log("\(name) connected: \(W)x\(H), \(depth)-bit, \(slots) cache tiles\(widthMM > 0 ? ", \(widthMM) mm wide" : "")")
 
             let mirroring = isMirror
@@ -182,6 +202,8 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
                 if let e = enc, slots > 0, g4enc_enable_cache(e, Int32(slots)) != 0 {
                     log("tile cache disabled (out of memory)")
                 }
+                clientYUV = depth == 32 && (helloFlags & Int(G4_HELLO_FLAG_YUV)) != 0
+                if let e = enc { g4enc_set_yuv(e, clientYUV && smoothVideo ? 1 : 0) }
                 sentID = 0; ackedID = 0; pending = false
                 sendTimes.removeAll()
             }
@@ -355,7 +377,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         return ok.pointee
     }
 
-    private func readHello(_ sock: Int32) -> (Int, Int, Int, Int, Int)? {
+    private func readHello(_ sock: Int32) -> (Int, Int, Int, Int, Int, Int)? {
         var hdr = [UInt8](repeating: 0, count: 8)
         guard readAll(sock, &hdr, 8), Int(hdr[0]) == G4_MSG_HELLO else { return nil }
         let len = Int(be32(hdr, 4))
@@ -366,7 +388,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         let cacheSlots = len >= 14 ? be16(p, 12) : 0
         let mm = len >= 16 ? be16(p, 14) : 0          // physical width; 0 = unknown (older clients)
         guard w > 0, h > 0, d == 16 || d == 32 else { return nil }
-        return (w, h, d, cacheSlots, mm)
+        return (w, h, d, cacheSlots, mm, Int(p[11]))
     }
 
     private func setUpDisplay() -> Bool {
@@ -503,14 +525,34 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         guard n > 0, let out else { return }
 
         if writeAll(fd, out, n) {
+            scheduleRefreshIfNeeded()
             sentID &+= 1
             sendTimes[sentID] = nowMs()
             statFrames += 1; statBytes += n; statRaw += Int(st.raw_bytes); statCopies += Int(st.copies)
             statHits += Int(st.cache_hits)
+            statYuv += Int(st.yuvs); statRefresh += Int(st.refreshes)
         } else {
             shutdown(fd, SHUT_RDWR)
         }
         reportStats()
+    }
+
+    /// Video tiles were sent as 4:2:2. Once they stop changing the screen
+    /// may go quiet (ScreenCaptureKit sends nothing), so come back when the
+    /// lossless refresh is due and encode again.
+    private func scheduleRefreshIfNeeded() {
+        guard !refreshScheduled, let e = enc else { return }
+        let due = g4enc_refresh_due(e, UInt32(truncatingIfNeeded: Int64(nowMs())))
+        guard due >= 0 else { return }
+        refreshScheduled = true
+        encQ.asyncAfter(deadline: .now() + .milliseconds(Int(due) + 20)) { [weak self] in
+            guard let self else { return }
+            self.refreshScheduled = false
+            guard self.enc != nil, self.fd >= 0 else { return }
+            self.pending = true
+            self.trySend()
+            if !self.pending { self.scheduleRefreshIfNeeded() }
+        }
     }
 
     private func onAck(_ id: UInt32) {
@@ -533,11 +575,11 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         snap.at = nowMs()
         DispatchQueue.main.async { self.onStats?(snap) }
         if cfg.verbose {
-            log(String(format: "%.1f fps  %.0f KB/s  (%.1fx)  frame→screen %.1f ms  waits %d  scroll copies %d  cache hits %d",
-                       snap.fps, snap.kbps, snap.compression, snap.latencyMs, statBlocked, statCopies, statHits))
+            log(String(format: "%.1f fps  %.0f KB/s  (%.1fx)  frame→screen %.1f ms  waits %d  scroll copies %d  cache hits %d  video rects %d  sharpened tiles %d",
+                       snap.fps, snap.kbps, snap.compression, snap.latencyMs, statBlocked, statCopies, statHits, statYuv, statRefresh))
         }
         statT0 = nowMs(); statFrames = 0; statBytes = 0; statRaw = 0; statBlocked = 0
-        statCopies = 0; statHits = 0; statRtt = 0; statRttN = 0
+        statCopies = 0; statHits = 0; statRtt = 0; statRttN = 0; statYuv = 0; statRefresh = 0
     }
 
     // MARK: - reading (connection thread)

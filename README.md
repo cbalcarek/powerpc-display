@@ -31,7 +31,8 @@ stay responsive. A G5 is the fastest.
 ```
 Apple Silicon Mac ────────────────────────────────────────►  PowerPC Mac (Tiger)
 virtual display → ScreenCaptureKit → diff vs. its model   →   decode into texture memory
-  scroll detection (COPY) · solid fills · LZ4                  → one DMA of changed rows
+  scroll detection (COPY) · solid fills · LZ4                  → DMA of only the changed bands
+  video regions as 4:2:2 YCbCr (optional)
 cursor position @125 Hz (tiny messages)                        → cursor drawn locally
                       ◄──────── ACK after each frame is on screen
 ```
@@ -95,12 +96,15 @@ When the other Mac connects, the PowerPC Mac takes over the whole screen (menu
 bar and Dock hidden) and stays awake while connected. **Command-Escape**
 pauses and brings the window back; click **Resume** to let it reconnect.
 
-Optional, once (Terminal): turn off Tiger's delayed TCP acknowledgements,
-which can stall bursts of screen data on 10.4:
+Optional, once: click **Fix Network Stalls…** in the window (asks for an
+administrator password). Tiger's default TCP delayed-acknowledgement setting
+(3) can stall bursts of data on 10.4; this sets the commonly recommended 2,
+now and after restarts. The button shows "Network tuned" once it's set
+(0 counts too). By hand, in Terminal:
 
 ```sh
-sudo sysctl -w net.inet.tcp.delayed_ack=0
-echo net.inet.tcp.delayed_ack=0 | sudo tee -a /etc/sysctl.conf   # keep after reboot
+sudo sysctl -w net.inet.tcp.delayed_ack=2
+echo net.inet.tcp.delayed_ack=2 | sudo tee -a /etc/sysctl.conf   # keep after reboot
 ```
 
 The build also makes a command-line `ppcdisplay` (for the chip it was built
@@ -132,6 +136,11 @@ The window and menu show:
   shows your main display on the PowerPC Mac, scaled down and letterboxed to fit
 - **Arrange Displays…**: opens System Settings › Displays to place it
 - **Frame rate**: 60 / 30 / 20 / 15 fps (remembered)
+- **Smoother video** (on by default): areas that change at video rate are
+  sent as 4:2:2 YCbCr, half the data, with slightly softer colour in the
+  video. Text and still areas are always exact, and a video that stops is
+  resent losslessly within about a third of a second. Needs Millions of
+  colours on the PowerPC Mac; turn it off for pixel-exact video.
 - **Launch at Login**
 
 Run the app rather than the bare binary from Xcode: without the app bundle,
@@ -191,8 +200,13 @@ Open Anyway.
 
 ## Tuning
 
-- `-v` on both sides prints frames/s, KB/s, decode time (PowerPC) and
-  frame-to-screen latency (Apple Silicon).
+- `-v` on both sides prints stats every 5 s. Apple Silicon: frames/s, KB/s,
+  frame-to-screen latency, scroll copies, cache hits, video rects. PowerPC
+  (`ppcdisplay -v`): frames/s, KB/s in, decode time, how long it waited for
+  the graphics card, upload time and size per draw, and flush time (which
+  includes waiting for the display's refresh). Send these when something
+  feels slow: they show whether the CPU, the graphics card or the network is
+  the limit.
 - `--inflight 1` on the Apple Silicon Mac trades a little smoothness for the lowest possible
   latency; `3` can help if the PowerPC Mac decodes faster than the network.
 - `--fps 30` halves capture work; the PowerPC Mac still draws the cursor at full rate.
@@ -217,8 +231,16 @@ Open Anyway.
 - Direct framebuffer drawing copies with 8-byte floating-point stores rather
   than `memcpy`: the system copy uses `dcbz`, which traps on every cache line
   in uncached video memory.
-- Tiger's TCP delayed-ACK default is a known cause of stalls on 10.4; see
-  the sysctl above.
+- Only the 16-row bands that changed are uploaded to the graphics card, so
+  a change at the top and one at the bottom of the screen don't upload
+  everything in between.
+- Video regions use 4:2:2 YCbCr (Apple lists YCbCr 4:2:2 among the optimal
+  texture formats). It's converted to RGB on the PowerPC CPU with integer
+  maths identical on both Macs, so the Apple Silicon Mac's model of the
+  screen stays exact (scroll detection and the tile cache keep working), and
+  it works with every graphics card and drawing path.
+- Tiger's TCP delayed-ACK default is a known cause of stalls on 10.4
+  (HELIOS TI 110 recommends 2); see Fix Network Stalls above.
 
 ## Layout
 
@@ -236,6 +258,9 @@ test/                     round-trip + fuzz tests (`make -C test`)
 
 ## Status / honest caveats
 
+- The video (4:2:2) path is tested the same way: the PowerPC side always
+  equals the Apple Silicon Mac's model, including a little-endian encoder
+  checked against a big-endian decoder, and becomes exact once video stops.
 - The codec is tested: every frame decodes byte-identical to what the Apple Silicon Mac
   captured, including scroll detection with and without hints, on x86 and on
   emulated big-endian PowerPC 7450, plus 9,000 corrupted frames under

@@ -17,6 +17,7 @@ func usage() -> Never {
       --inflight N      frames allowed in flight before waiting for the PowerPC Mac (default 2)
       --mirror          mirror the main display instead of adding one
       --extend          add a display (default, unless Mirror was chosen in the app)
+      --sharp-video     send video regions losslessly (turns off Smoother Video)
       -v                print throughput / latency stats every 5 s
       --list            list displays and exit
     """)
@@ -36,6 +37,7 @@ if args.contains("--list") {
 var cfg = Host.Config()
 if let saved = AppController.savedFPS { cfg.fps = saved }
 cfg.mirror = AppController.savedMirror
+cfg.smoothVideo = AppController.savedSmoothVideo
 var i = 0
 if let first = args.first, !first.hasPrefix("-") {
     cfg.g4Address = first
@@ -53,6 +55,7 @@ while i < args.count {
     case "-v": cfg.verbose = true
     case "--mirror": cfg.mirror = true
     case "--extend": cfg.mirror = false
+    case "--sharp-video": cfg.smoothVideo = false
     default: usage()
     }
     i += 1

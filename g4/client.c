@@ -250,7 +250,37 @@ typedef struct {
     double stat_t0;
     unsigned stat_frames, stat_draws;
     double stat_bytes, stat_decode_ms;
+    double stat_wait_ms, stat_upload_ms, stat_flush_ms, stat_upload_kb;
 } session;
+
+/* Call fn for each run of consecutive changed bands (rows y0..y1). Only the
+   bands that changed are uploaded: a menu-bar clock and a line of typing at
+   the bottom no longer mean re-sending the whole screen in between. */
+typedef void (*band_fn)(session *s, int y0, int y1);
+static void for_each_dirty_run(session *s, band_fn fn)
+{
+    const g4_decoder *d = &s->dec;
+    int b = 0;
+    while (b < d->nbands) {
+        int b0;
+        if (!d->dirty_bands[b]) { b++; continue; }
+        b0 = b;
+        while (b < d->nbands && d->dirty_bands[b]) b++;
+        {
+            int y0 = b0 * G4_DIRTY_BAND, y1 = b * G4_DIRTY_BAND;
+            if (y1 > s->H) y1 = s->H;
+            fn(s, y0, y1);
+        }
+    }
+}
+
+static void mark_rows(session *s, int y, int h)
+{
+    int b;
+    if (y < 0) { h += y; y = 0; }
+    if (y + h > s->H) h = s->H - y;
+    for (b = y / G4_DIRTY_BAND; h > 0 && b * G4_DIRTY_BAND < y + h; b++) s->dec.dirty_bands[b] = 1;
+}
 
 static int gl_setup(session *s, int allow_soft)
 {
@@ -372,18 +402,26 @@ static void gl_teardown(session *s)
 /* GPU may still be reading the framebuffer memory: wait before overwriting it */
 static void wait_fb_idle(session *s)
 {
+    double t0 = now_ms();
     if (s->fence) glFinishObjectAPPLE(GL_TEXTURE, s->fbtex);
     else glFinish();
+    s->stat_wait_ms += now_ms() - t0;
+}
+
+static void upload_rows(session *s, int y0, int y1)
+{
+    glTexSubImage2D(GL_TEXTURE_RECTANGLE_EXT, 0, 0, y0, s->W, y1 - y0, GL_BGRA, s->fmt_type,
+                    s->fb + (size_t)y0 * s->dec.stride);
+    s->stat_upload_kb += (double)(y1 - y0) * s->dec.stride / 1024.0;
 }
 
 static void draw(session *s)
 {
+    double t0 = now_ms(), t1;
     glBindTexture(GL_TEXTURE_RECTANGLE_EXT, s->fbtex);
     if (s->dec.dirty_y1 > s->dec.dirty_y0) {
-        int y0 = s->dec.dirty_y0, h = s->dec.dirty_y1 - s->dec.dirty_y0;
         glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, GL_TRUE);
-        glTexSubImage2D(GL_TEXTURE_RECTANGLE_EXT, 0, 0, y0, s->W, h, GL_BGRA, s->fmt_type,
-                        s->fb + (size_t)y0 * s->dec.stride);
+        for_each_dirty_run(s, upload_rows);
         g4dec_reset_dirty(&s->dec);
     }
     glDisable(GL_BLEND);
@@ -406,7 +444,10 @@ static void draw(session *s)
         glTexCoord2i(0, s->cur_h);        glVertex2i(x, y + s->cur_h);
         glEnd();
     }
-    CGLFlushDrawable(s->ctx);
+    t1 = now_ms();
+    s->stat_upload_ms += t1 - t0;
+    CGLFlushDrawable(s->ctx);          /* may wait for the display's refresh */
+    s->stat_flush_ms += now_ms() - t1;
     s->stat_draws++;
 }
 
@@ -463,30 +504,30 @@ static int raw_setup(session *s)
     }
     s->oc_w = 0;
     s->dec.dirty_y0 = 0; s->dec.dirty_y1 = s->H;    /* paint everything once */
+    mark_rows(s, 0, s->H);
     fprintf(stderr, "drawing directly to the framebuffer (no suitable OpenGL)\n");
     return 0;
 }
 
-static void raw_draw(session *s)
+static void raw_copy_rows(session *s, int y0, int y1)
 {
-    int y0 = s->dec.dirty_y0, y1 = s->dec.dirty_y1, y;
-    int nx = s->cur_x - s->cur_hx, ny = s->cur_y - s->cur_hy;
-    int show = s->cur_vis && s->cur_px && s->cur_w > 0;
     size_t rowb = (size_t)s->W * s->bpp;
-
-    /* rows under the old and new cursor are refreshed from the clean frame */
-    if (s->oc_w) {
-        if (s->oc_y < y0) y0 = s->oc_y;
-        if (s->oc_y + s->oc_h > y1) y1 = s->oc_y + s->oc_h;
-    }
-    if (show) {
-        if (ny < y0) y0 = ny;
-        if (ny + s->cur_h > y1) y1 = ny + s->cur_h;
-    }
-    if (y0 < 0) y0 = 0;
-    if (y1 > s->H) y1 = s->H;
+    int y;
     for (y = y0; y < y1; y++)
         vram_copy(s->raw_base + (size_t)y * s->raw_rowbytes, s->fb + (size_t)y * s->dec.stride, rowb);
+    s->stat_upload_kb += (double)(y1 - y0) * rowb / 1024.0;
+}
+
+static void raw_draw(session *s)
+{
+    int nx = s->cur_x - s->cur_hx, ny = s->cur_y - s->cur_hy;
+    int show = s->cur_vis && s->cur_px && s->cur_w > 0;
+    double t0 = now_ms();
+
+    /* rows under the old and new cursor are refreshed from the clean frame */
+    if (s->oc_w) mark_rows(s, s->oc_y, s->oc_h);
+    if (show) mark_rows(s, ny, s->cur_h);
+    for_each_dirty_run(s, raw_copy_rows);
     g4dec_reset_dirty(&s->dec);
     s->oc_w = 0;
 
@@ -514,6 +555,7 @@ static void raw_draw(session *s)
         }
         s->oc_x = nx; s->oc_y = ny; s->oc_w = s->cur_w; s->oc_h = s->cur_h;
     }
+    s->stat_upload_ms += now_ms() - t0;
     s->stat_draws++;
 }
 
@@ -648,12 +690,14 @@ static void run_session(int fd)
     g4_put16(hello + G4_HDR_SIZE + 6, (uint32_t)s.W);
     g4_put16(hello + G4_HDR_SIZE + 8, (uint32_t)s.H);
     hello[G4_HDR_SIZE + 10] = (uint8_t)s.depth;
-    hello[G4_HDR_SIZE + 11] = 0;
+    /* 4:2:2 video regions: decoded on the CPU into the normal framebuffer,
+       so every drawing path supports them (32-bit only) */
+    hello[G4_HDR_SIZE + 11] = s.depth == 32 ? G4_HELLO_FLAG_YUV : 0;
 
     s.fb = (uint8_t *)valloc(s.fbsize);                       /* page aligned for DMA */
     if (!s.fb) return;
     memset(s.fb, 0, s.fbsize);
-    g4dec_init(&s.dec, s.fb, s.W, s.H, s.depth);
+    if (g4dec_init(&s.dec, s.fb, s.W, s.H, s.depth)) { free(s.fb); return; }
     {
         int slots = opt_slots >= 0 ? opt_slots : auto_slots();
         if (slots > 0 && g4dec_enable_cache(&s.dec, slots))
@@ -766,11 +810,16 @@ static void run_session(int fd)
 
             if ((opt_verbose || opt_test) && now_ms() - s.stat_t0 > 5000) {
                 double secs = (now_ms() - s.stat_t0) / 1000.0;
-                fprintf(stderr, "%.1f frames/s, %.1f draws/s, %.0f KB/s, decode %.1f ms/frame\n",
+                double nd = s.stat_draws ? (double)s.stat_draws : 1.0;
+                fprintf(stderr, "%.1f frames/s, %.1f draws/s, %.0f KB/s in, decode %.1f ms/frame, "
+                                "GPU wait %.1f ms/frame, upload %.1f ms + %.0f KB/draw, flush %.1f ms/draw\n",
                         s.stat_frames / secs, s.stat_draws / secs, s.stat_bytes / 1024.0 / secs,
-                        s.stat_frames ? s.stat_decode_ms / s.stat_frames : 0.0);
+                        s.stat_frames ? s.stat_decode_ms / s.stat_frames : 0.0,
+                        s.stat_frames ? s.stat_wait_ms / s.stat_frames : 0.0,
+                        s.stat_upload_ms / nd, s.stat_upload_kb / nd, s.stat_flush_ms / nd);
                 s.stat_t0 = now_ms(); s.stat_frames = s.stat_draws = 0;
                 s.stat_bytes = s.stat_decode_ms = 0;
+                s.stat_wait_ms = s.stat_upload_ms = s.stat_flush_ms = s.stat_upload_kb = 0;
             }
         }
     }

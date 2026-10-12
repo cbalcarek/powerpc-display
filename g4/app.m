@@ -11,7 +11,19 @@
  * Objective-C 1.0 only (no properties, no fast enumeration): Tiger's gcc 4.0.
  */
 #import <Cocoa/Cocoa.h>
+#include <sys/sysctl.h>
 #include "g4client.h"
+
+/* Tiger's TCP delayed-ACK default (3) can stall bursts of screen data;
+   2 (or 0) is the usual fix. */
+static int delayed_ack_value(void)
+{
+    int v = -1;
+    size_t n = sizeof v;
+    if (sysctlbyname("net.inet.tcp.delayed_ack", &v, &n, NULL, 0) != 0) return -1;
+    return v;
+}
+static BOOL network_tuned(void) { int v = delayed_ack_value(); return v == 2 || v == 0; }
 
 @interface G4AppDelegate : NSObject
 {
@@ -21,10 +33,12 @@
     NSButton    *pauseButton;
     NSPopUpButton *depthPopup;
     NSTextField *machineField;
+    NSButton    *netButton;
     NSButton    *loginBox;
     int          state;
 }
 - (void)showStatus:(NSDictionary *)info;
+- (void)updateNetButton;
 @end
 
 static G4AppDelegate *gDelegate = nil;
@@ -118,10 +132,19 @@ static void status_hook(int st, const char *text)
     detailField = [self labelWithFrame:NSMakeRect(100, 128, 340, 60) size:11 bold:NO];
     [v addSubview:detailField];
 
-    machineField = [self labelWithFrame:NSMakeRect(20, 96, 420, 16) size:10 bold:NO];
+    machineField = [self labelWithFrame:NSMakeRect(20, 96, 290, 28) size:10 bold:NO];
     [machineField setTextColor:[NSColor disabledControlTextColor]];
     [machineField setStringValue:[NSString stringWithFormat:@"This Mac: %s", g4c_machine_summary()]];
     [v addSubview:machineField];
+
+    netButton = [[[NSButton alloc] initWithFrame:NSMakeRect(304, 94, 142, 28)] autorelease];
+    [netButton setBezelStyle:NSRoundedBezelStyle];
+    [[netButton cell] setControlSize:NSSmallControlSize];
+    [netButton setFont:[NSFont systemFontOfSize:[NSFont smallSystemFontSize]]];
+    [netButton setTarget:self];
+    [netButton setAction:@selector(fixNetwork:)];
+    [v addSubview:netButton];
+    [self updateNetButton];
 
     label = [self labelWithFrame:NSMakeRect(20, 64, 56, 18) size:13 bold:NO];
     [label setStringValue:@"Colour:"];
@@ -199,6 +222,33 @@ static void status_hook(int st, const char *text)
 - (void)togglePause:(id)sender
 {
     g4c_set_paused(!g4c_is_paused());
+}
+
+- (void)updateNetButton
+{
+    if (network_tuned()) {
+        [netButton setTitle:@"Network tuned"];
+        [netButton setEnabled:NO];
+    } else {
+        [netButton setTitle:@"Fix Network Stalls..."];
+        [netButton setEnabled:YES];
+    }
+}
+
+/* sets net.inet.tcp.delayed_ack=2 now and in /etc/sysctl.conf (asks for an
+   administrator password once) */
+- (void)fixNetwork:(id)sender
+{
+    NSString *src =
+        @"do shell script \"/usr/sbin/sysctl -w net.inet.tcp.delayed_ack=2 && "
+        @"{ grep -v '^net.inet.tcp.delayed_ack' /etc/sysctl.conf 2>/dev/null; echo 'net.inet.tcp.delayed_ack=2'; } "
+        @"> /tmp/ppcdisplay-sysctl.conf && mv /tmp/ppcdisplay-sysctl.conf /etc/sysctl.conf && "
+        @"chmod 644 /etc/sysctl.conf\" with administrator privileges";
+    NSDictionary *err = nil;
+    NSAppleScript *as = [[[NSAppleScript alloc] initWithSource:src] autorelease];
+    [as executeAndReturnError:&err];
+    if (err) NSLog(@"PowerPC Display: network fix not applied: %@", err);   /* includes Cancel */
+    [self updateNetButton];
 }
 
 - (void)changeDepth:(id)sender

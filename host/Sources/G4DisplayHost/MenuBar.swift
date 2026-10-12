@@ -50,6 +50,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         mir.state = model.mirror ? .on : .off
         menu.addItem(mir)
         menu.addItem(action("Arrange Displays…", #selector(openDisplays)))
+        let sv = action("Smoother Video", #selector(toggleSmooth))
+        sv.state = model.smoothVideo ? .on : .off
+        sv.toolTip = "Areas playing video are sent with half the data (slightly softer colours)."
+        menu.addItem(sv)
 
         let fpsItem = NSMenuItem(title: "Frame Rate", action: nil, keyEquivalent: "")
         let fpsMenu = NSMenu()
@@ -84,5 +88,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func openDisplays() { controller.openDisplaySettings() }
     @objc private func setExtend() { controller.setMirror(false) }
     @objc private func setMirror() { controller.setMirror(true) }
+    @objc private func toggleSmooth() { controller.setSmoothVideo(!model.smoothVideo) }
     @objc private func quit() { NSApp.terminate(nil) }
 }

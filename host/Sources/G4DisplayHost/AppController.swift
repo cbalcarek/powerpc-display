@@ -9,6 +9,7 @@ final class AppModel: ObservableObject {
     @Published var enabled = true
     @Published var fps: Int
     @Published var mirror = false
+    @Published var smoothVideo = true
     @Published var launchAtLogin = false
 
     init(fps: Int) { self.fps = fps }
@@ -73,7 +74,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     static let fpsChoices = [60, 30, 20, 15]
     private static let fpsKey = "fps"
     private static let mirrorKey = "mirror"
+    private static let smoothKey = "smoothVideo"
     static var savedMirror: Bool { UserDefaults.standard.bool(forKey: mirrorKey) }
+    static var savedSmoothVideo: Bool { UserDefaults.standard.object(forKey: smoothKey) as? Bool ?? true }
     static var savedFPS: Int? {
         let v = UserDefaults.standard.integer(forKey: fpsKey)
         return v > 0 ? v : nil
@@ -86,6 +89,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         self.model = AppModel(fps: host.fps)
         super.init()
         model.mirror = host.isMirror
+        model.smoothVideo = host.smoothVideo
     }
 
     // MARK: - lifecycle
@@ -121,7 +125,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     @objc func showWindow() {
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 260),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 290),
                              styleMask: [.titled, .closable, .miniaturizable],
                              backing: .buffered, defer: false)
             w.title = "PowerPC Display"
@@ -172,6 +176,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         model.mirror = on
         host.setMirror(on)
         UserDefaults.standard.set(on, forKey: Self.mirrorKey)
+    }
+
+    func setSmoothVideo(_ on: Bool) {
+        model.smoothVideo = on
+        host.setSmoothVideo(on)
+        UserDefaults.standard.set(on, forKey: Self.smoothKey)
     }
 
     func setFPS(_ f: Int) {
@@ -265,13 +275,17 @@ struct StatusView: View {
                 .frame(width: 90)
             }
 
+            Toggle("Smoother video (slightly softer colours in videos)",
+                   isOn: Binding(get: { model.smoothVideo }, set: { controller.setSmoothVideo($0) }))
+                .help("Areas playing video are sent with half the data. Text and still areas stay exact.")
+
             if controller.isBundled {
                 Toggle("Launch at Login", isOn: Binding(get: { model.launchAtLogin },
                                                         set: { controller.setLaunchAtLogin($0) }))
             }
         }
         .padding(20)
-        .frame(width: 460)
+        .frame(width: 480)
     }
 
     private func stat(_ value: String, _ label: String) -> some View {

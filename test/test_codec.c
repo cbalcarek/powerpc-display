@@ -259,12 +259,110 @@ static int lz4_selftest(void)
     return fails;
 }
 
-int main(void)
+/* 4:2:2 video path: the client must always equal the encoder's model, and
+   once the video stops everything must become exact again */
+static int one_yuv(int w, int h, int with_cache)
+{
+    g4_encoder *e = g4enc_create(w, h, 32);
+    uint8_t *fb = (uint8_t *)calloc((size_t)w * h, 4);
+    uint8_t *src = (uint8_t *)malloc((size_t)w * h * 4);
+    g4_decoder d;
+    uint32_t fid = 0, t = 5000;
+    int i, fails = 0, x, y, yuvs = 0, refreshes = 0, fuzzed = 0;
+    double vbytes = 0;
+    g4dec_init(&d, fb, w, h, 32);
+    if (with_cache) { g4dec_enable_cache(&d, 512); g4enc_enable_cache(e, 512); }
+    g4enc_set_yuv(e, 1);
+
+#define YSTEP(expect_exact) do {                                                     \
+        const uint8_t *msg; size_t n; g4_enc_stats st;                                \
+        g4enc_ingest_bgra(e, src, (size_t)w * 4); g4enc_set_time(e, t);               \
+        n = g4enc_encode(e, ++fid, &msg, &st);                                        \
+        yuvs += st.yuvs; refreshes += st.refreshes; if (st.yuvs) vbytes += n;         \
+        if (n) {                                                                       \
+            int rc = g4dec_frame(&d, msg + G4_HDR_SIZE, n - G4_HDR_SIZE, NULL);       \
+            if (rc) { printf("yuv %dx%d: decode error %d\n", w, h, rc); fails++; }    \
+            if (fuzzed < 300) {                                                        \
+                uint8_t *buf = (uint8_t *)malloc(n), *fb2 = (uint8_t *)calloc((size_t)w * h, 4); \
+                g4_decoder d2; int k;                                                  \
+                memcpy(buf, msg, n);                                                   \
+                for (k = 0; k < 6; k++) buf[G4_HDR_SIZE + rnd() % (n - G4_HDR_SIZE)] ^= (uint8_t)(1 + rnd() % 255); \
+                g4dec_init(&d2, fb2, w, h, 32); if (with_cache) g4dec_enable_cache(&d2, 512); \
+                g4dec_frame(&d2, buf + G4_HDR_SIZE, n - G4_HDR_SIZE, NULL);           \
+                g4dec_free(&d2); free(fb2); free(buf); fuzzed++;                       \
+            }                                                                          \
+        }                                                                              \
+        if (memcmp(fb, g4enc_model(e), (size_t)w * h * 4)) {                           \
+            printf("yuv %dx%d frame %u: client != model\n", w, h, fid); fails++; }    \
+        if ((expect_exact) && memcmp(fb, g4enc_current(e), (size_t)w * h * 4)) {      \
+            printf("yuv %dx%d frame %u: not exact after refresh\n", w, h, fid); fails++; } \
+    } while (0)
+
+    /* desktop-ish background */
+    for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+        uint8_t *q = src + ((size_t)y * w + x) * 4;
+        q[0] = (uint8_t)(x * 3); q[1] = (uint8_t)(y * 2); q[2] = (uint8_t)((x ^ y) & 255); q[3] = 255;
+    }
+    YSTEP(1);
+    /* video in the middle at 30 fps, text changing elsewhere now and then */
+    for (i = 0; i < 40; i++) {
+        int vx = w / 5 + 1, vy = h / 5, vw = w * 3 / 5, vh = h * 3 / 5;
+        for (y = vy; y < vy + vh; y++) for (x = vx; x < vx + vw; x++) {
+            uint8_t *q = src + ((size_t)y * w + x) * 4;
+            q[0] = (uint8_t)(rnd()); q[1] = (uint8_t)(x + i * 5); q[2] = (uint8_t)(y * 3 + i); q[3] = 255;
+        }
+        if (i % 7 == 0) { uint8_t *q = src + 4 * (size_t)(i % w); q[0] ^= 0x55; }   /* "caret" */
+        t += 33;
+        YSTEP(0);
+    }
+    /* video stops: within the refresh window nothing is resent, then it's exact */
+    {
+        int due = g4enc_refresh_due(e, t);
+        if (due < 0) { printf("yuv %dx%d: no refresh pending after video\n", w, h); fails++; }
+    }
+    t += 100; YSTEP(0);
+    t += 400; YSTEP(1);
+    if (g4enc_refresh_due(e, t) >= 0) { printf("yuv %dx%d: refresh still pending\n", w, h); fails++; }
+    if (!yuvs || !refreshes) { printf("yuv %dx%d: video path not exercised (yuv %d, refresh %d)\n", w, h, yuvs, refreshes); fails++; }
+
+    /* off again: everything lossless */
+    g4enc_set_yuv(e, 0);
+    for (i = 0; i < 5; i++) { src[(size_t)(h / 2) * w * 4 + 4 * (size_t)i] ^= 0x33; t += 33; YSTEP(1); }
+
+    printf("yuv %dx%d%s: %d video rects, %d tiles refreshed, avg video frame %.0f KB, %s\n", w, h,
+           with_cache ? " +cache" : "", yuvs, refreshes, yuvs ? vbytes / 1024 / 40 : 0.0, fails ? "FAILED" : "ok");
+#undef YSTEP
+    g4dec_free(&d); free(fb); free(src); g4enc_destroy(e);
+    return fails;
+}
+
+static int run_yuv(void)
+{
+    int fails = 0, k;
+    /* the colour maths must round-trip greys exactly and stay close otherwise */
+    for (k = 0; k < 256; k++) {
+        uint8_t a[4] = { 255, (uint8_t)k, (uint8_t)k, (uint8_t)k }, o[4], r0[4], r1[4];
+        g4_yuv_from_pair(a, a, o); g4_yuv_to_pair(o, r0, r1);
+        if (abs(r0[1] - k) > 1 || abs(r0[2] - k) > 1 || abs(r0[3] - k) > 1) { printf("yuv grey %d -> %d,%d,%d\n", k, r0[1], r0[2], r0[3]); fails++; break; }
+    }
+    fails += one_yuv(W, H, 1);
+    fails += one_yuv(W, H, 0);
+    fails += one_yuv(101, 67, 1);     /* odd width: last pixel paired with itself */
+    return fails;
+}
+
+int main(int argc, char **argv)
 {
     int fails = lz4_selftest();
+    if (argc > 1 && !strcmp(argv[1], "yuv")) {          /* just the video path */
+        fails += run_yuv();
+        printf(fails ? "\nFAILED (%d)\n" : "\nALL TESTS PASSED\n", fails);
+        return fails != 0;
+    }
     fails += run(32, 0);
     fails += run(32, G4_DEFAULT_SLOTS);
     fails += run(16, G4_DEFAULT_SLOTS);
+    fails += run_yuv();
     printf(fails ? "\nFAILED (%d)\n" : "\nALL TESTS PASSED\n", fails);
     return fails != 0;
 }

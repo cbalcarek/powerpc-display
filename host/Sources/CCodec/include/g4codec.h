@@ -47,8 +47,16 @@ enum {
     G4_RECT_LZ4   = 3,  /* + u32 clen + clen bytes (LZ4 block)    */
     G4_RECT_COPY  = 4,  /* + u16 srcx, u16 srcy (dst = x,y)       */
     G4_RECT_CACHE = 5,  /* + u16 slot: paint cached tile at x,y   */
-    G4_RECT_STORE = 6   /* + u16 slot: save fb tile at x,y        */
+    G4_RECT_STORE = 6,  /* + u16 slot: save fb tile at x,y        */
+    G4_RECT_YUV   = 7   /* + u32 clen, then 4:2:2 video data: LZ4 block
+                           (clen > 0) or raw (clen == 0). Per row, pairs of
+                           pixels as Cb,Y0,Cr,Y1 (an odd last pixel is paired
+                           with itself). depth 32 only; both sides turn it back
+                           into RGB with the same integer maths (g4_yuv_*). */
 };
+
+/* HELLO flags (byte 11), set by the client */
+#define G4_HELLO_FLAG_YUV   0x01   /* client can decode G4_RECT_YUV */
 
 /* tile cache: 32x32 tiles the client keeps so content it has seen before
    (menus closing, switching apps back, caret blink) costs 12 bytes */
@@ -60,7 +68,8 @@ enum {
  * Message header: u8 type, u8 0, u16 0, u32 payload length (BE).
  *
  * HELLO   : 'G','4','D','P', u16 version, u16 width, u16 height,
- *           u8 depth (16|32), u8 flags, u16 cache slots, u16 0  (16 bytes)
+ *           u8 depth (16|32), u8 flags, u16 cache slots,
+ *           u16 physical width in mm (0 = unknown)              (16 bytes)
  * FRAME   : u32 frame_id, u16 nrects, u16 0, then rects:
  *           u8 kind, u8 0, u16 x, u16 y, u16 w, u16 h, <kind data>
  *           Rects are applied in order (COPYs always come first).
@@ -96,6 +105,8 @@ typedef struct g4_encoder g4_encoder;
 
 typedef struct {
     uint32_t rects, fills, raws, lz4s, copies, cache_hits, cache_stores;
+    uint32_t yuvs;           /* video rects sent as 4:2:2               */
+    uint32_t refreshes;      /* tiles resent losslessly after video stopped */
     uint32_t raw_bytes;      /* uncompressed size of changed pixels */
     uint32_t wire_bytes;     /* size of the FRAME message           */
     int32_t  scroll_dy;      /* last detected scroll (0 = none)     */
@@ -109,6 +120,15 @@ void        g4enc_force_full(g4_encoder *e);
 /* wall-clock milliseconds before each encode; lets the cache skip tiles that
    change at video rate. Optional. */
 void        g4enc_set_time(g4_encoder *e, uint32_t ms);
+/* Send regions that change at video rate as 4:2:2 YCbCr (half the data,
+   slightly softer colour). Only when the client advertised
+   G4_HELLO_FLAG_YUV and depth is 32. Such tiles are resent losslessly once
+   they have been still for a moment (see g4enc_refresh_due). */
+void        g4enc_set_yuv(g4_encoder *e, int on);
+/* ms until a lossless refresh of still video tiles is due (0 = now), or -1
+   if none is pending. The host should call g4enc_encode again by then even
+   if the screen hasn't changed. */
+int         g4enc_refresh_due(const g4_encoder *e, uint32_t now_ms);
 /* use a tile cache of `slots` tiles (as advertised by the client); 0 = off */
 int         g4enc_enable_cache(g4_encoder *e, int slots);
 /* convert a BGRA8888 frame (ScreenCaptureKit layout) into the current frame */
@@ -136,11 +156,19 @@ typedef struct {
     uint8_t *scratch;
     size_t   scratch_cap;
     int      dirty_y0, dirty_y1;   /* rows touched since last reset; y1 exclusive */
+    uint8_t *dirty_bands;          /* per G4_DIRTY_BAND rows: touched since reset */
+    int      nbands;
     uint8_t *cache;                /* slots * 32*32*bpp */
     int      cache_slots;
 } g4_decoder;
 
-int  g4dec_init(g4_decoder *d, uint8_t *fb, int width, int height, int depth);
+#define G4_DIRTY_BAND 16
+
+/* 4:2:2 conversion shared by encoder and decoder (exact integer maths) */
+void g4_yuv_from_pair(const uint8_t *argb0, const uint8_t *argb1, uint8_t *out4);
+void g4_yuv_to_pair(const uint8_t *in4, uint8_t *argb0, uint8_t *argb1);
+
+int  g4dec_init(g4_decoder *d, uint8_t *fb, int width, int height, int depth);   /* 0 ok, -1 bad args / no memory */
 int  g4dec_enable_cache(g4_decoder *d, int slots);   /* 0 ok, -1 out of memory */
 void g4dec_free(g4_decoder *d);
 void g4dec_reset_dirty(g4_decoder *d);

@@ -156,6 +156,32 @@ void g4_bgra_to_wire32(const uint8_t *s, uint8_t *d, size_t npix)
     }
 }
 
+/* ---------- 4:2:2 YCbCr (full range), exact integer maths ----------
+   Every shift is applied to a non-negative value, so encoder (M1) and
+   decoder (PowerPC) get bit-identical results. */
+static inline uint8_t clamp255(int v) { return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v); }
+
+void g4_yuv_from_pair(const uint8_t *a, const uint8_t *b, uint8_t *o)
+{
+    int r0 = a[1], g0 = a[2], b0 = a[3], r1 = b[1], g1 = b[2], b1 = b[3];
+    int ra = (r0 + r1 + 1) >> 1, ga = (g0 + g1 + 1) >> 1, ba = (b0 + b1 + 1) >> 1;
+    o[1] = clamp255((77 * r0 + 150 * g0 + 29 * b0 + 128) >> 8);                    /* Y0 */
+    o[3] = clamp255((77 * r1 + 150 * g1 + 29 * b1 + 128) >> 8);                    /* Y1 */
+    o[0] = clamp255((128 * ba - 43 * ra - 85 * ga + 32896) >> 8);                  /* Cb */
+    o[2] = clamp255((128 * ra - 107 * ga - 21 * ba + 32896) >> 8);                 /* Cr */
+}
+
+void g4_yuv_to_pair(const uint8_t *in, uint8_t *a, uint8_t *b)
+{
+    int c = in[0] - 128, d = in[2] - 128;
+    int rd = ((359 * d + 128 + 46080) >> 8) - 180;
+    int gd = ((88 * c + 183 * d + 128 + 34816) >> 8) - 136;
+    int bd = ((454 * c + 128 + 58112) >> 8) - 227;
+    int y0 = in[1], y1 = in[3];
+    a[0] = 0xFF; a[1] = clamp255(y0 + rd); a[2] = clamp255(y0 - gd); a[3] = clamp255(y0 + bd);
+    b[0] = 0xFF; b[1] = clamp255(y1 + rd); b[2] = clamp255(y1 - gd); b[3] = clamp255(y1 + bd);
+}
+
 /* ======================================================================
  * Encoder
  * ==================================================================== */
@@ -204,7 +230,22 @@ struct g4_encoder {
     uint8_t  *tvol;        /* per screen tile: changing at video rate */
     uint32_t  now_ms;
     int       clock_set;
+
+    /* video tiles sent as 4:2:2: the model holds what the client shows (the
+       lossy version); lhash remembers the exact source so the still tile
+       isn't resent every frame, and it is resent losslessly once still */
+    int       yuv;
+    uint8_t  *tfast;       /* per tile: changed again within YUV_FAST_MS */
+    uint8_t  *lossy;
+    uint64_t *lhash;
+    uint32_t *llast;
+    uint8_t  *refresh;     /* per tile: changed only because it's due a lossless refresh */
+    uint8_t  *vmask;
 };
+
+#define YUV_FAST_MS     250   /* changed again this soon: treat as video   */
+#define YUV_REFRESH_MS  300   /* still this long: resend losslessly        */
+#define YUV_MIN_TILES   4     /* smaller animations stay lossless          */
 
 #define TILE_BYTES(e) ((size_t)TILE * TILE * (e)->bpp)
 
@@ -250,9 +291,21 @@ g4_encoder *g4enc_create(int width, int height, int depth)
     e->tcap = 1; while (e->tcap < (size_t)height * 2) e->tcap <<= 1;
     e->tkey = (uint64_t *)calloc(e->tcap, sizeof(uint64_t));
     e->tval = (int32_t *)calloc(e->tcap, sizeof(int32_t));
+    {
+        size_t nt = (size_t)e->tw * e->th;
+        e->tlast = (uint32_t *)calloc(nt, sizeof(uint32_t));
+        e->tvol = (uint8_t *)calloc(nt, 1);
+        e->tfast = (uint8_t *)calloc(nt, 1);
+        e->lossy = (uint8_t *)calloc(nt, 1);
+        e->lhash = (uint64_t *)calloc(nt, sizeof(uint64_t));
+        e->llast = (uint32_t *)calloc(nt, sizeof(uint32_t));
+        e->refresh = (uint8_t *)calloc(nt, 1);
+        e->vmask = (uint8_t *)calloc(nt, 1);
+    }
 
     if (!e->cur || !e->model || !e->tiles || !e->rects || !e->hc || !e->hm ||
-        !e->uc || !e->um || !e->votes || !e->tkey || !e->tval) {
+        !e->uc || !e->um || !e->votes || !e->tkey || !e->tval || !e->tlast || !e->tvol ||
+        !e->tfast || !e->lossy || !e->lhash || !e->llast || !e->refresh || !e->vmask) {
         g4enc_destroy(e);
         return NULL;
     }
@@ -269,6 +322,7 @@ void g4enc_destroy(g4_encoder *e)
     free(e->tkey); free(e->tval);
     free(e->cpx); free(e->chash); free(e->cvalid); free(e->cref); free(e->ctab);
     free(e->thash); free(e->tstate); free(e->tlast); free(e->tvol);
+    free(e->tfast); free(e->lossy); free(e->lhash); free(e->llast); free(e->refresh); free(e->vmask);
     free(e);
 }
 
@@ -285,9 +339,25 @@ static void cache_clear(g4_encoder *e)
 
 void g4enc_set_time(g4_encoder *e, uint32_t ms) { e->now_ms = ms; e->clock_set = 1; }
 
+void g4enc_set_yuv(g4_encoder *e, int on) { e->yuv = on && e->depth == 32; }
+
+int g4enc_refresh_due(const g4_encoder *e, uint32_t now_ms)
+{
+    int i, n = e->tw * e->th, best = -1;
+    for (i = 0; i < n; i++) {
+        int left;
+        if (!e->lossy[i]) continue;
+        left = YUV_REFRESH_MS - (int)(uint32_t)(now_ms - e->llast[i]);
+        if (left < 0) left = 0;
+        if (best < 0 || left < best) best = left;
+    }
+    return best;
+}
+
 void g4enc_force_full(g4_encoder *e)
 {
     e->force_full = 1;
+    memset(e->lossy, 0, (size_t)e->tw * e->th);
     cache_clear(e);   /* new connection: the client's cache is empty */
 }
 
@@ -295,9 +365,9 @@ int g4enc_enable_cache(g4_encoder *e, int slots)
 {
     size_t ntiles = (size_t)e->tw * e->th;
     free(e->cpx); free(e->chash); free(e->cvalid); free(e->cref); free(e->ctab);
-    free(e->thash); free(e->tstate); free(e->tlast); free(e->tvol);
+    free(e->thash); free(e->tstate);
     e->cpx = NULL; e->chash = NULL; e->cvalid = e->cref = NULL; e->ctab = NULL;
-    e->thash = NULL; e->tstate = e->tvol = NULL; e->tlast = NULL;
+    e->thash = NULL; e->tstate = NULL;
     e->slots = 0;
     if (slots <= 0) return 0;
     if (slots > G4_MAX_SLOTS) slots = G4_MAX_SLOTS;
@@ -310,9 +380,7 @@ int g4enc_enable_cache(g4_encoder *e, int slots)
     e->ctab = (int32_t *)malloc(e->ctab_cap * sizeof(int32_t));
     e->thash = (uint64_t *)calloc(ntiles, sizeof(uint64_t));
     e->tstate = (uint8_t *)calloc(ntiles, 1);
-    e->tlast = (uint32_t *)calloc(ntiles, sizeof(uint32_t));
-    e->tvol = (uint8_t *)calloc(ntiles, 1);
-    if (!e->cpx || !e->chash || !e->cvalid || !e->cref || !e->ctab || !e->thash || !e->tstate || !e->tlast || !e->tvol) {
+    if (!e->cpx || !e->chash || !e->cvalid || !e->cref || !e->ctab || !e->thash || !e->tstate) {
         g4enc_enable_cache(e, 0);
         return -1;
     }
@@ -474,12 +542,25 @@ static int detect_scroll(g4_encoder *e, int rx, int ry, int rw, int rh,
         *wp = p + 14;
     }
     move_rows(e->model, e->stride, xoff, seg, run0 + best_dy, run0, runlen);
+    memset(e->lossy, 0, (size_t)e->tw * e->th);   /* lossy pixels moved: compare exactly from now on */
     (*nrects)++;
     if (st) { st->copies++; st->rects++; st->scroll_dy = best_dy; }
     return 1;
 }
 
 /* ---------- tile diff + rect building ---------- */
+
+/* hash of the (possibly clipped) tile at tx,ty in fb */
+static uint64_t tile_hash(const g4_encoder *e, const uint8_t *fb, int tx, int ty)
+{
+    int y0 = ty * TILE, y1 = y0 + TILE > e->h ? e->h : y0 + TILE;
+    int x0 = tx * TILE, x1 = x0 + TILE > e->w ? e->w : x0 + TILE;
+    size_t off = (size_t)x0 * e->bpp, n = (size_t)(x1 - x0) * e->bpp;
+    uint64_t h = 0xcbf29ce484222325ull;
+    int y;
+    for (y = y0; y < y1; y++) { h ^= hash_seg(fb + (size_t)y * e->stride + off, n); h *= 0x100000001b3ull; }
+    return h;
+}
 
 static int diff_tiles(g4_encoder *e)
 {
@@ -489,7 +570,21 @@ static int diff_tiles(g4_encoder *e)
         for (tx = 0; tx < e->tw; tx++) {
             int x0 = tx * TILE, x1 = x0 + TILE > e->w ? e->w : x0 + TILE;
             size_t off = (size_t)x0 * e->bpp, n = (size_t)(x1 - x0) * e->bpp;
+            int i = ty * e->tw + tx;
             uint8_t ch = 0;
+            e->refresh[i] = 0;
+            if (e->lossy[i]) {
+                /* the client shows a 4:2:2 version of this tile: it only
+                   counts as changed if the source changed, or once it has
+                   been still long enough for a lossless refresh */
+                if (tile_hash(e, e->cur, tx, ty) != e->lhash[i]) ch = 1;
+                else if (!e->clock_set || (uint32_t)(e->now_ms - e->llast[i]) >= YUV_REFRESH_MS) {
+                    ch = 1; e->refresh[i] = 1;
+                }
+                e->tiles[i] = ch;
+                changed += ch;
+                continue;
+            }
             for (y = y0; y < y1; y++) {
                 size_t o = (size_t)y * e->stride + off;
                 if (memcmp(e->cur + o, e->model + o, n)) { ch = 1; break; }
@@ -501,11 +596,27 @@ static int diff_tiles(g4_encoder *e)
     return changed;
 }
 
-static int build_rects(g4_encoder *e)
+/* how recently each changed tile changed before: video-rate tiles aren't
+   cached (they'd churn the cache) and may be sent as 4:2:2 */
+static void track_video(g4_encoder *e)
+{
+    int i, n = e->tw * e->th;
+    for (i = 0; i < n; i++) {
+        uint32_t dt;
+        if (!e->tiles[i]) continue;
+        if (e->refresh[i]) { e->tvol[i] = 0; e->tfast[i] = 0; continue; }   /* not a real change */
+        dt = (uint32_t)(e->now_ms - e->tlast[i]);
+        e->tvol[i] = e->clock_set && e->tlast[i] && dt < 100;
+        e->tfast[i] = e->clock_set && e->tlast[i] && dt < YUV_FAST_MS;
+        if (e->clock_set) e->tlast[i] = e->now_ms ? e->now_ms : 1;
+    }
+}
+
+static int build_rects(g4_encoder *e, const uint8_t *mask)
 {
     int n = 0, ty, i;
     for (ty = 0; ty < e->th; ty++) {
-        const uint8_t *row = e->tiles + ty * e->tw;
+        const uint8_t *row = mask + ty * e->tw;
         int y0 = ty * TILE, rh = (y0 + TILE > e->h ? e->h : y0 + TILE) - y0;
         int c = 0;
         /* rects still open after the previous row become merge candidates */
@@ -618,10 +729,6 @@ static int cache_pass(g4_encoder *e, uint8_t **wp, int *nrects, int *changed, g4
             uint8_t *g = e->gather;
             e->tstate[i] = 0;
             if (!e->tiles[i]) continue;
-            /* a tile that changed again within 100 ms is animating/video:
-               caching it would only churn the cache */
-            e->tvol[i] = e->clock_set && e->tlast[i] && (uint32_t)(e->now_ms - e->tlast[i]) < 100;
-            if (e->clock_set) e->tlast[i] = e->now_ms ? e->now_ms : 1;
             if ((tx + 1) * TILE > e->w || (ty + 1) * TILE > e->h) continue;   /* edge tile */
 
             gather_tile(e, e->cur, tx, ty, g);
@@ -639,6 +746,7 @@ static int cache_pass(g4_encoder *e, uint8_t **wp, int *nrects, int *changed, g4
                     memcpy(e->model + (size_t)(ty * TILE + y) * e->stride + xoff, g + (size_t)y * rowb, rowb);
             }
             e->cref[s] = 1;
+            if (e->refresh[i] || e->lossy[i]) { e->lossy[i] = 0; if (st) st->refreshes++; }
             e->tiles[i] = 0;
             e->tstate[i] = 0;
             (*changed)--;
@@ -691,6 +799,14 @@ static int encode_rect(g4_encoder *e, const mrect *r, uint8_t **wp, g4_enc_stats
         memcpy(e->model + o, e->cur + o, rowb);     /* client will now hold this */
     }
     if (st) st->raw_bytes += (uint32_t)raw;
+    {
+        int tx, ty;
+        for (ty = r->y / TILE; ty * TILE < r->y + r->h; ty++)
+            for (tx = r->x / TILE; tx * TILE < r->x + r->w; tx++) {
+                int i = ty * e->tw + tx;
+                if (e->lossy[i]) { e->lossy[i] = 0; if (st) st->refreshes++; }
+            }
+    }
 
     if (ensure(&e->out, &e->out_cap, pos + 14 + raw)) return -1;
     p = e->out + pos;
@@ -725,6 +841,72 @@ static int encode_rect(g4_encoder *e, const mrect *r, uint8_t **wp, g4_enc_stats
     return 0;
 }
 
+/* one video rect as 4:2:2; the model gets exactly what the client will show */
+static int encode_rect_yuv(g4_encoder *e, const mrect *r, uint8_t **wp, g4_enc_stats *st)
+{
+    int pairs = (r->w + 1) / 2, y, k;
+    size_t rowy = (size_t)pairs * 4, raw = rowy * r->h, xoff = (size_t)r->x * 4;
+    size_t pos = (size_t)(*wp - e->out), clen;
+    uint8_t *p;
+
+    if (ensure(&e->gather, &e->gather_cap, raw)) return -1;
+    if (ensure(&e->lz, &e->lz_cap, g4_lz4_bound(raw))) return -1;
+    for (y = 0; y < r->h; y++) {
+        const uint8_t *c = e->cur + (size_t)(r->y + y) * e->stride + xoff;
+        uint8_t *m = e->model + (size_t)(r->y + y) * e->stride + xoff;
+        uint8_t *g = e->gather + (size_t)y * rowy;
+        for (k = 0; k < pairs; k++) {
+            int x0 = 2 * k, x1 = x0 + 1 < r->w ? x0 + 1 : x0;
+            uint8_t tmp[4];
+            g4_yuv_from_pair(c + 4 * x0, c + 4 * x1, g + 4 * k);
+            if (x1 != x0) g4_yuv_to_pair(g + 4 * k, m + 4 * x0, m + 4 * x1);
+            else          g4_yuv_to_pair(g + 4 * k, m + 4 * x0, tmp);
+        }
+    }
+    if (st) { st->raw_bytes += (uint32_t)((size_t)r->w * r->h * 4); st->yuvs++; st->rects++; }
+
+    clen = g4_lz4_compress(e->gather, raw, e->lz, e->lz_cap);
+    if (!(clen && clen + 4 < raw)) clen = 0;
+    if (ensure(&e->out, &e->out_cap, pos + 14 + (clen ? clen : raw))) return -1;
+    p = e->out + pos;
+    p[0] = G4_RECT_YUV; p[1] = 0;
+    g4_put16(p + 2, (uint32_t)r->x); g4_put16(p + 4, (uint32_t)r->y);
+    g4_put16(p + 6, (uint32_t)r->w); g4_put16(p + 8, (uint32_t)r->h);
+    g4_put32(p + 10, (uint32_t)clen);
+    memcpy(p + 14, clen ? e->lz : e->gather, clen ? clen : raw);
+    *wp = p + 14 + (clen ? clen : raw);
+    return 0;
+}
+
+/* send tiles changing at video rate as 4:2:2 */
+static int yuv_pass(g4_encoder *e, uint8_t **wp, int *nrects, int *changed, g4_enc_stats *st)
+{
+    int i, n = e->tw * e->th, nv = 0, nr;
+    if (!e->yuv || !e->clock_set) return 0;
+    for (i = 0; i < n; i++) {
+        e->vmask[i] = e->tiles[i] && e->tfast[i] && !e->refresh[i];
+        nv += e->vmask[i];
+    }
+    if (nv < YUV_MIN_TILES) return 0;
+    nr = build_rects(e, e->vmask);
+    for (i = 0; i < nr; i++) {
+        const mrect *r = &e->rects[i];
+        int tx, ty;
+        if (encode_rect_yuv(e, r, wp, st)) return -1;
+        for (ty = r->y / TILE; ty * TILE < r->y + r->h; ty++)
+            for (tx = r->x / TILE; tx * TILE < r->x + r->w; tx++) {
+                int t = ty * e->tw + tx;
+                e->tiles[t] = 0;
+                e->lossy[t] = 1;
+                e->lhash[t] = tile_hash(e, e->cur, tx, ty);
+                e->llast[t] = e->now_ms;
+                (*changed)--;
+            }
+    }
+    *nrects += nr;
+    return 0;
+}
+
 size_t g4enc_encode(g4_encoder *e, uint32_t frame_id, const uint8_t **out, g4_enc_stats *st)
 {
     uint8_t *wp;
@@ -736,6 +918,7 @@ size_t g4enc_encode(g4_encoder *e, uint32_t frame_id, const uint8_t **out, g4_en
 
     if (e->force_full) {
         memset(e->tiles, 1, (size_t)e->tw * e->th);
+        memset(e->refresh, 0, (size_t)e->tw * e->th);
         changed = e->tw * e->th;
         e->force_full = 0;
     } else {
@@ -766,13 +949,15 @@ size_t g4enc_encode(g4_encoder *e, uint32_t frame_id, const uint8_t **out, g4_en
         }
     }
     e->nhints = 0;
+    track_video(e);
 
     {
         int changed_total = changed;
         if (e->slots && cache_pass(e, &wp, &nrects, &changed, st)) return 0;
+        if (yuv_pass(e, &wp, &nrects, &changed, st)) return 0;
         if (changed == 0 && nrects == 0) return 0;
 
-        nr = changed ? build_rects(e) : 0;
+        nr = changed ? build_rects(e, e->tiles) : 0;
         for (i = 0; i < nr; i++)
             if (encode_rect(e, &e->rects[i], &wp, st)) return 0;
         nrects += nr;
@@ -804,6 +989,9 @@ int g4dec_init(g4_decoder *d, uint8_t *fb, int width, int height, int depth)
     d->fb = fb; d->width = width; d->height = height;
     d->bpp = depth == 16 ? 2 : 4;
     d->stride = (size_t)width * d->bpp;
+    d->nbands = (height + G4_DIRTY_BAND - 1) / G4_DIRTY_BAND;
+    d->dirty_bands = (uint8_t *)calloc((size_t)d->nbands, 1);
+    if (!d->dirty_bands) return -1;
     g4dec_reset_dirty(d);
     return 0;
 }
@@ -824,13 +1012,21 @@ void g4dec_free(g4_decoder *d)
 {
     free(d->scratch); d->scratch = NULL; d->scratch_cap = 0;
     free(d->cache); d->cache = NULL; d->cache_slots = 0;
+    free(d->dirty_bands); d->dirty_bands = NULL; d->nbands = 0;
 }
-void g4dec_reset_dirty(g4_decoder *d) { d->dirty_y0 = d->height; d->dirty_y1 = 0; }
+void g4dec_reset_dirty(g4_decoder *d)
+{
+    d->dirty_y0 = d->height; d->dirty_y1 = 0;
+    if (d->dirty_bands) memset(d->dirty_bands, 0, (size_t)d->nbands);
+}
 
 static void mark_dirty(g4_decoder *d, int y, int h)
 {
+    int b;
     if (y < d->dirty_y0) d->dirty_y0 = y;
     if (y + h > d->dirty_y1) d->dirty_y1 = y + h;
+    if (d->dirty_bands)
+        for (b = y / G4_DIRTY_BAND; b * G4_DIRTY_BAND < y + h && b < d->nbands; b++) d->dirty_bands[b] = 1;
 }
 
 int g4dec_frame(g4_decoder *d, const uint8_t *p, size_t len, uint32_t *frame_id)
@@ -930,6 +1126,39 @@ int g4dec_frame(g4_decoder *d, const uint8_t *p, size_t len, uint32_t *frame_id)
                 for (r = 0; r < G4_TILE; r++)
                     memcpy(tile + (size_t)r * rowb, d->fb + (size_t)(y + r) * d->stride + xoff, rowb);
                 continue;   /* screen unchanged: not dirty */
+            }
+            break;
+        }
+        case G4_RECT_YUV: {
+            unsigned pairs = (w + 1) / 2, k;
+            size_t rowy = (size_t)pairs * 4, raw = rowy * h, clen;
+            const uint8_t *src;
+            if (d->bpp != 4) return -8;
+            if (end - p < 4) return -2;
+            clen = g4_get32(p); p += 4;
+            if (clen) {
+                if ((size_t)(end - p) < clen) return -2;
+                if (raw > d->scratch_cap) {
+                    uint8_t *nb = (uint8_t *)realloc(d->scratch, raw);
+                    if (!nb) return -5;
+                    d->scratch = nb; d->scratch_cap = raw;
+                }
+                if (g4_lz4_decompress(p, clen, d->scratch, raw)) return -4;
+                src = d->scratch;
+                p += clen;
+            } else {
+                if ((size_t)(end - p) < raw) return -2;
+                src = p;
+                p += raw;
+            }
+            for (r = 0; r < (int)h; r++) {
+                uint8_t *row = d->fb + (size_t)(y + r) * d->stride + xoff;
+                const uint8_t *in = src + (size_t)r * rowy;
+                for (k = 0; k < pairs; k++) {
+                    uint8_t tmp[4];
+                    if (2 * k + 1 < w) g4_yuv_to_pair(in + 4 * k, row + 8 * k, row + 8 * k + 4);
+                    else               g4_yuv_to_pair(in + 4 * k, row + 8 * k, tmp);
+                }
             }
             break;
         }
