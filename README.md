@@ -173,6 +173,21 @@ The address that worked is remembered, so afterwards plain
 `sh ~/g4display/g4/update.sh` is enough. The first time, get the script
 itself with the command the Share window prints.
 
+## Releases
+
+Each build also saves a zip for GitHub releases in `releases/` (not part of
+the source):
+
+- **Build Mac App.command** → `releases/PowerPC-Display-Mac.zip`
+- **Build PowerPC Display.command** on Tiger → `PowerPC-Display-Tiger.zip`,
+  sent automatically to `releases/` on the Apple Silicon Mac when
+  **Share with PowerPC Mac.command** is running there (the update script
+  remembers its address).
+
+The Tiger zip contains the all-chips app (G3, G4, G5). The Mac app is signed
+with a local certificate, so on other Macs it opens via Privacy & Security ›
+Open Anyway.
+
 ## Tuning
 
 - `-v` on both sides prints frames/s, KB/s, decode time (PowerPC) and

@@ -121,6 +121,18 @@ if [ -d "/Applications/G4 Display.app" ]; then
     osascript -e 'tell application "System Events" to if exists login item "G4 Display" then delete login item "G4 Display"' >/dev/null 2>&1
 fi
 
+# zip for a GitHub release, and hand it to the Apple Silicon Mac if we know where it is
+ZIP="PowerPC-Display-Tiger.zip"
+rm -f "$ZIP"
+if ditto -c -k --keepParent "$APP" "$ZIP" 2>/dev/null; then
+    if [ -f .m1host ] && curl -fsS -m 60 -T "$ZIP" "http://`cat .m1host`:8000/releases/$ZIP" 2>/dev/null; then
+        echo "Sent $ZIP to your Mac (g4display/releases)."
+    else
+        echo "Made $ZIP. To send it to your Mac (with Share with PowerPC Mac running there):"
+        echo "  curl -T \"`pwd`/$ZIP\" http://YOUR-MAC.local:8000/releases/$ZIP"
+    fi
+fi
+
 echo
 echo "Built: `pwd`/$APP"
 if rm -rf "/Applications/$APP" 2>/dev/null && cp -R "$APP" /Applications/ 2>/dev/null; then

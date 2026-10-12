@@ -12,4 +12,7 @@ if [ -d "/Applications/G4 Display.app" ]; then
 fi
 rm -rf "/Applications/PowerPC Display.app"
 mv "build/PowerPC Display.app" /Applications/ && open "/Applications/PowerPC Display.app"
+mkdir -p ../releases
+ditto -c -k --keepParent "/Applications/PowerPC Display.app" ../releases/PowerPC-Display-Mac.zip &&
+    echo "Saved releases/PowerPC-Display-Mac.zip (for GitHub releases)."
 echo "Installed and opened /Applications/PowerPC Display.app - you can close this window."

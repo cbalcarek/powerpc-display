@@ -7,6 +7,8 @@ g4/g4display
 g4/.m1host
 test/test_codec
 *.iso
+releases/
+g4/*.zip
 *.o
 # Apple's Xcode installer (link to a local file; not redistributable)
 xcode.dmg
