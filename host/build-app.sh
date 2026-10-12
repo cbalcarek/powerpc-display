@@ -71,12 +71,14 @@ PLIST
 # Sign with a stable local certificate, so macOS keeps the Screen Recording
 # and Local Network permissions across rebuilds (an ad-hoc signature changes
 # on every build, which silently invalidates them).
+KC="$HOME/Library/Keychains/login.keychain-db"
 IDENTITY="PowerPC Display Local Signing"
-# reuse the certificate made by earlier versions (called G4 Display) if present
-security find-certificate -c "G4 Display Local Signing" >/dev/null 2>&1 && IDENTITY="G4 Display Local Signing"
-if ! security find-identity -p codesigning 2>/dev/null | grep -q "$IDENTITY" \
-   && ! security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
-    echo "Creating a local signing certificate (one time)..."
+has_identity() { security find-identity -p codesigning "$KC" 2>/dev/null | grep -q "\"$1\""; }
+# reuse the certificate made by earlier versions (called G4 Display) if it works
+has_identity "G4 Display Local Signing" && IDENTITY="G4 Display Local Signing"
+
+if ! has_identity "$IDENTITY"; then
+    echo "Creating a local code-signing certificate \"$IDENTITY\" (one time)..."
     TMPD="$(mktemp -d)"
     cat > "$TMPD/cert.cnf" <<CNF
 [req]
@@ -90,24 +92,41 @@ basicConstraints = critical,CA:false
 keyUsage = critical,digitalSignature
 extendedKeyUsage = critical,codeSigning
 CNF
-    if openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -config "$TMPD/cert.cnf" \
-           -keyout "$TMPD/key.pem" -out "$TMPD/cert.pem" >/dev/null 2>&1 \
-       && openssl pkcs12 -export -inkey "$TMPD/key.pem" -in "$TMPD/cert.pem" \
-           -name "$IDENTITY" -passout pass:g4display -out "$TMPD/id.p12" >/dev/null 2>&1 \
-       && security import "$TMPD/id.p12" -k "$HOME/Library/Keychains/login.keychain-db" \
-           -P g4display -T /usr/bin/codesign >/dev/null; then
+    # Apple's own openssl (LibreSSL), not Homebrew's: OpenSSL 3 writes .p12
+    # files the macOS keychain can't import
+    OSSL=/usr/bin/openssl
+    if $OSSL req -x509 -newkey rsa:2048 -nodes -days 3650 -config "$TMPD/cert.cnf" \
+           -keyout "$TMPD/key.pem" -out "$TMPD/cert.pem" \
+       && $OSSL pkcs12 -export -inkey "$TMPD/key.pem" -in "$TMPD/cert.pem" -name "$IDENTITY" \
+           -passout pass:ppcdisplay -out "$TMPD/id.p12" \
+       && security import "$TMPD/id.p12" -k "$KC" -P ppcdisplay -T /usr/bin/codesign; then
         echo "Created \"$IDENTITY\" in your login keychain."
     else
-        echo "Couldn't create a signing certificate; using an ad-hoc signature."
+        echo "Couldn't create the signing certificate (errors above)."
     fi
     rm -rf "$TMPD"
 fi
-if security find-certificate -c "$IDENTITY" >/dev/null 2>&1 \
-   && codesign --force --sign "$IDENTITY" "$APP" 2>/dev/null; then
+
+sign_with_identity() { codesign --force --sign "$IDENTITY" --keychain "$KC" "$APP"; }
+SIGNED=""
+if has_identity "$IDENTITY"; then
+    if sign_with_identity; then
+        SIGNED=1
+    else
+        # some macOS versions only sign with a certificate trusted for code signing
+        echo "Trusting \"$IDENTITY\" for code signing (macOS may ask for your password once)..."
+        TMPC="$(mktemp -d)"
+        security find-certificate -c "$IDENTITY" -p "$KC" > "$TMPC/cert.pem" \
+            && security add-trusted-cert -r trustRoot -p codeSign -k "$KC" "$TMPC/cert.pem" \
+            && sign_with_identity && SIGNED=1
+        rm -rf "$TMPC"
+    fi
+fi
+if [ -n "$SIGNED" ]; then
     echo "Signed with \"$IDENTITY\" (permissions will survive rebuilds)."
 else
     codesign --force --sign - "$APP"
-    echo "Signed ad hoc: after this rebuild, re-allow Screen Recording for PowerPC Display."
+    echo "WARNING: signed ad hoc. macOS will ask for Screen Recording again after every rebuild."
 fi
 
 echo
