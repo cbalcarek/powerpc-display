@@ -425,7 +425,9 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         if isMirror {
             sc.scalesToFit = true
             sc.preservesAspectRatio = true
-            sc.backgroundColor = CGColor(gray: 0, alpha: 1)
+            // letterbox bars are black by default. (Don't set backgroundColor:
+            // SCStreamConfiguration doesn't retain it, so a temporary CGColor
+            // is freed and the stream crashes copying it.)
             hintScale = min(CGFloat(W) / dw, CGFloat(H) / dh)
             hintOffX = ((CGFloat(W) - dw * hintScale) / 2).rounded(.down)
             hintOffY = ((CGFloat(H) - dh * hintScale) / 2).rounded(.down)
