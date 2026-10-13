@@ -56,7 +56,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key>           <string>AppIcon</string>
 $ICON_NAME_KEY
     <key>CFBundlePackageType</key>        <string>APPL</string>
-    <key>CFBundleShortVersionString</key> <string>0.9</string>
+    <key>CFBundleShortVersionString</key> <string>0.9.1</string>
     <key>CFBundleVersion</key>            <string>9</string>
     <key>LSMinimumSystemVersion</key>     <string>14.0</string>
     <!-- macOS local-network privacy: required to find the G4 with Bonjour -->
