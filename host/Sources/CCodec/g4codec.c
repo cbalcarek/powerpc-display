@@ -182,6 +182,79 @@ void g4_yuv_to_pair(const uint8_t *in, uint8_t *a, uint8_t *b)
     b[0] = 0xFF; b[1] = clamp255(y1 + rd); b[2] = clamp255(y1 - gd); b[3] = clamp255(y1 + bd);
 }
 
+/* One row of 4:2:2 (Cb,Y0,Cr,Y1 per pair) to A,R,G,B, w pixels. On G4/G5
+   builds (AltiVec) 8 pixels at a time; the results are bit-identical to
+   g4_yuv_to_pair (same integer maths, and AltiVec's saturating pack is the
+   same clamp), which the tests check exhaustively. */
+#if defined(__ALTIVEC__)
+#include <altivec.h>
+#undef vector
+#undef pixel
+#undef bool
+#define G4V __vector
+static const unsigned char yuv_permY[16]  __attribute__((aligned(16))) = { 0,17, 0,19, 0,21, 0,23, 0,25, 0,27, 0,29, 0,31 };
+static const unsigned char yuv_permCb[16] __attribute__((aligned(16))) = { 0,16, 0,16, 0,20, 0,20, 0,24, 0,24, 0,28, 0,28 };
+static const unsigned char yuv_permCr[16] __attribute__((aligned(16))) = { 0,18, 0,18, 0,22, 0,22, 0,26, 0,26, 0,30, 0,30 };
+static const short yuv_k[5][8] __attribute__((aligned(16))) = {
+    { 128, 128, 128, 128, 128, 128, 128, 128 },
+    { 359, 359, 359, 359, 359, 359, 359, 359 },
+    {  88,  88,  88,  88,  88,  88,  88,  88 },
+    { 183, 183, 183, 183, 183, 183, 183, 183 },
+    { 454, 454, 454, 454, 454, 454, 454, 454 } };
+/* per-channel bias added before >>8, and offset subtracted after */
+static const int yuv_b[6][4] __attribute__((aligned(16))) = {
+    { 46208, 46208, 46208, 46208 }, { 180, 180, 180, 180 },     /* R */
+    { 34944, 34944, 34944, 34944 }, { 136, 136, 136, 136 },     /* G */
+    { 58240, 58240, 58240, 58240 }, { 227, 227, 227, 227 } };   /* B */
+
+static void yuv8_altivec(const uint8_t *in, uint8_t *out)
+{
+    G4V unsigned char zero = vec_splat_u8(0);
+    G4V unsigned char v = vec_perm(vec_ld(0, in), vec_ld(15, in), vec_lvsl(0, in));   /* unaligned load */
+    G4V signed short y16  = (G4V signed short)vec_perm(zero, v, vec_ld(0, yuv_permY));
+    G4V signed short k128 = vec_ld(0, yuv_k[0]);
+    G4V signed short c16  = vec_sub((G4V signed short)vec_perm(zero, v, vec_ld(0, yuv_permCb)), k128);
+    G4V signed short d16  = vec_sub((G4V signed short)vec_perm(zero, v, vec_ld(0, yuv_permCr)), k128);
+    G4V unsigned int eight = vec_splat_u32(8);
+    G4V signed int rd, gd, bd;
+    G4V signed short rs, gs, bs;
+    G4V unsigned char r8, g8, b8, a8 = vec_splat_u8(-1), ar, gb;
+    G4V unsigned char res[2];
+
+    /* even lanes of c16/d16 hold the 4 pairs' chroma: 32-bit products */
+    rd = vec_sub(vec_sra(vec_add(vec_mule(d16, vec_ld(0, yuv_k[1])), vec_ld(0, yuv_b[0])), eight), vec_ld(0, yuv_b[1]));
+    gd = vec_sub(vec_sra(vec_add(vec_add(vec_mule(c16, vec_ld(0, yuv_k[2])), vec_mule(d16, vec_ld(0, yuv_k[3]))),
+                                 vec_ld(0, yuv_b[2])), eight), vec_ld(0, yuv_b[3]));
+    bd = vec_sub(vec_sra(vec_add(vec_mule(c16, vec_ld(0, yuv_k[4])), vec_ld(0, yuv_b[4])), eight), vec_ld(0, yuv_b[5]));
+
+    /* one value per pair -> one per pixel */
+    rs = vec_pack(rd, rd); rs = vec_mergeh(rs, rs);
+    gs = vec_pack(gd, gd); gs = vec_mergeh(gs, gs);
+    bs = vec_pack(bd, bd); bs = vec_mergeh(bs, bs);
+
+    r8 = vec_packsu(vec_add(y16, rs), vec_add(y16, rs));      /* saturating = clamp to 0..255 */
+    g8 = vec_packsu(vec_sub(y16, gs), vec_sub(y16, gs));
+    b8 = vec_packsu(vec_add(y16, bs), vec_add(y16, bs));
+
+    ar = vec_mergeh(a8, r8);                                     /* A R A R ... */
+    gb = vec_mergeh(g8, b8);                                     /* G B G B ... */
+    res[0] = (G4V unsigned char)vec_mergeh((G4V unsigned short)ar, (G4V unsigned short)gb);
+    res[1] = (G4V unsigned char)vec_mergel((G4V unsigned short)ar, (G4V unsigned short)gb);
+    memcpy(out, res, 32);
+}
+#endif
+
+void g4_yuv_row(const uint8_t *in, uint8_t *out, unsigned w)
+{
+    unsigned x = 0;
+    uint8_t tmp[4];
+#if defined(__ALTIVEC__)
+    for (; x + 8 <= w; x += 8) yuv8_altivec(in + 2 * x, out + 4 * x);
+#endif
+    for (; x + 1 < w; x += 2) g4_yuv_to_pair(in + 2 * x, out + 4 * x, out + 4 * x + 4);
+    if (x < w) g4_yuv_to_pair(in + 2 * x, out + 4 * x, tmp);
+}
+
 /* ======================================================================
  * Encoder
  * ==================================================================== */
@@ -1162,7 +1235,7 @@ int g4dec_frame(g4_decoder *d, const uint8_t *p, size_t len, uint32_t *frame_id)
             break;
         }
         case G4_RECT_YUV: {
-            unsigned pairs = (w + 1) / 2, k;
+            unsigned pairs = (w + 1) / 2;
             size_t rowy = (size_t)pairs * 4, raw = rowy * h, clen;
             const uint8_t *src;
             if (d->bpp != 4) return -8;
@@ -1183,15 +1256,8 @@ int g4dec_frame(g4_decoder *d, const uint8_t *p, size_t len, uint32_t *frame_id)
                 src = p;
                 p += raw;
             }
-            for (r = 0; r < (int)h; r++) {
-                uint8_t *row = d->fb + (size_t)(y + r) * d->stride + xoff;
-                const uint8_t *in = src + (size_t)r * rowy;
-                for (k = 0; k < pairs; k++) {
-                    uint8_t tmp[4];
-                    if (2 * k + 1 < w) g4_yuv_to_pair(in + 4 * k, row + 8 * k, row + 8 * k + 4);
-                    else               g4_yuv_to_pair(in + 4 * k, row + 8 * k, tmp);
-                }
-            }
+            for (r = 0; r < (int)h; r++)
+                g4_yuv_row(src + (size_t)r * rowy, d->fb + (size_t)(y + r) * d->stride + xoff, w);
             break;
         }
         default:

@@ -65,6 +65,8 @@ static int  opt_slots   = -1;   /* -1 = automatic (from RAM) */
 static int  opt_test    = 0;   /* -t: no OpenGL, decode only, save PNG snapshots */
 static volatile int quit_requested = 0;
 static int app_mode = 0;   /* set by the Tiger app (app.m) */
+static int opt_hwcursor = 1;   /* app: show the pointer as the real (hardware) cursor */
+static g4c_cursor_fn cursor_hook = NULL;
 static volatile int g_paused = 0;
 static void report(int state, const char *text);
 
@@ -260,6 +262,10 @@ typedef struct {
        screen back instead of freezing on the last picture */
     double last_rx;
     int got_ping;
+
+    /* hardware cursor (app): moving the pointer is one call, no redraw and
+       no wait for the display refresh, so frames never queue behind it */
+    int hw, hw_shown;
 } session;
 
 /* Call fn for each run of consecutive changed bands (rows y0..y1). Only the
@@ -280,6 +286,18 @@ static void for_each_dirty_run(session *s, band_fn fn)
             if (y1 > s->H) y1 = s->H;
             fn(s, y0, y1);
         }
+    }
+}
+
+static void hw_cursor_sync(session *s)
+{
+    int want = s->render && s->cur_vis && s->cur_w > 0;
+    if (want) {
+        CGDisplayMoveCursorToPoint(s->display, CGPointMake((float)s->cur_x, (float)s->cur_y));
+        if (!s->hw_shown) { CGDisplayShowCursor(s->display); s->hw_shown = 1; }
+    } else if (s->hw_shown) {
+        CGDisplayHideCursor(s->display);
+        s->hw_shown = 0;
     }
 }
 
@@ -404,7 +422,8 @@ static void gl_teardown(session *s)
         CGLDestroyContext(s->ctx);
         s->ctx = NULL;
     }
-    CGDisplayShowCursor(s->display);
+    if (!s->hw_shown) CGDisplayShowCursor(s->display);   /* balance the hide at setup */
+    s->hw_shown = 0;
     CGReleaseAllDisplays();
 }
 
@@ -441,7 +460,7 @@ static void draw(session *s)
     glTexCoord2i(0, s->H);      glVertex2i(0, s->H);
     glEnd();
 
-    if (s->cur_vis && s->cur_w > 0) {
+    if (!s->hw && s->cur_vis && s->cur_w > 0) {
         int x = s->cur_x - s->cur_hx, y = s->cur_y - s->cur_hy;
         glBindTexture(GL_TEXTURE_RECTANGLE_EXT, s->curtex);
         glEnable(GL_BLEND);
@@ -530,7 +549,7 @@ static void raw_copy_rows(session *s, int y0, int y1)
 static void raw_draw(session *s)
 {
     int nx = s->cur_x - s->cur_hx, ny = s->cur_y - s->cur_hy;
-    int show = s->cur_vis && s->cur_px && s->cur_w > 0;
+    int show = !s->hw && s->cur_vis && s->cur_px && s->cur_w > 0;
     double t0 = now_ms();
 
     /* rows under the old and new cursor are refreshed from the clean frame */
@@ -657,13 +676,17 @@ static int handle_message(session *s, int *need_draw, uint32_t *frame_to_ack)
             int x = (int16_t)g4_get16(s->msg), y = (int16_t)g4_get16(s->msg + 2), v = s->msg[4];
             if (x != s->cur_x || y != s->cur_y || v != s->cur_vis) {
                 s->cur_x = x; s->cur_y = y; s->cur_vis = v;
-                *need_draw = 1;
+                if (s->hw) hw_cursor_sync(s);      /* no redraw needed */
+                else *need_draw = 1;
             }
         }
         break;
     case G4_MSG_CURSOR_SHAPE:
         set_cursor_shape(s, s->msg, len);
-        *need_draw = 1;
+        if (s->hw) {
+            if (s->cur_w > 0) cursor_hook(s->cur_px, s->cur_w, s->cur_h, s->cur_hx, s->cur_hy);
+            hw_cursor_sync(s);
+        } else *need_draw = 1;
         break;
     case G4_MSG_PING:
         s->got_ping = 1;
@@ -704,7 +727,7 @@ static const char *pairing_path(int create_dir)
 
 static void pairing_save(void)
 {
-    char tmp[1100], hx[2 * G4_KEY_BYTES + 1], hh[2 * G4_ID_BYTES + 1];
+    char tmp[1200], hx[2 * G4_KEY_BYTES + 1], hh[2 * G4_ID_BYTES + 1];
     const char *path = pairing_path(1);
     FILE *f;
     int i;
@@ -899,6 +922,7 @@ static void run_session(int fd)
     s.bpp = s.depth == 16 ? 2 : 4;
     s.fbsize = (size_t)s.W * s.H * s.bpp;
     s.cur_vis = 0;
+    s.hw = app_mode && cursor_hook && opt_hwcursor && !opt_test;
 
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof buf);
@@ -995,12 +1019,13 @@ static void run_session(int fd)
                 if (gl_setup(&s, 0) == 0) {
                     s.render = 1;
                     upload_cursor(&s);
+                    if (s.hw) hw_cursor_sync(&s);
                 } else {
                     gl_teardown(&s);
-                    if (raw_setup(&s) == 0) s.render = 2;
+                    if (raw_setup(&s) == 0) { s.render = 2; if (s.hw) hw_cursor_sync(&s); }
                     else {
                         gl_teardown(&s);
-                        if (gl_setup(&s, 1) == 0) { s.render = 1; upload_cursor(&s); }
+                        if (gl_setup(&s, 1) == 0) { s.render = 1; upload_cursor(&s); if (s.hw) hw_cursor_sync(&s); }
                         else { report(G4C_ERROR, "This Mac can't show the picture: no OpenGL and no usable framebuffer."); break; }
                     }
                 }
@@ -1063,6 +1088,7 @@ static void run_session(int fd)
         }
     }
     if (s.gl_tried) gl_teardown(&s);
+    if (s.hw) cursor_hook(NULL, 0, 0, 0, 0);       /* back to the normal arrow */
     free(s.cur_px);
     g4dec_free(&s.dec);
     free(s.fb);
@@ -1090,6 +1116,8 @@ int  g4c_is_paused(void) { return g_paused; }
 void g4c_set_app_mode(int on) { app_mode = on; }
 void g4c_stop(void) { quit_requested = 1; }
 int  g4c_bonjour_stuck(void) { return bonjour_stuck; }
+void g4c_set_cursor_hook(g4c_cursor_fn fn) { cursor_hook = fn; }
+void g4c_set_hardware_cursor(int on) { opt_hwcursor = on != 0; }
 
 /* report a state change (deduplicated) to the app, or to stderr */
 static void report(int state, const char *text)

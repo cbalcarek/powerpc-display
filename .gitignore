@@ -8,6 +8,8 @@ g4/.m1host
 g4/.m1hosts
 test/test_codec
 test/test_auth
+test/test_yuv_simd
+test/test_yuv_simd_ppc
 *.iso
 releases/
 g4/*.zip

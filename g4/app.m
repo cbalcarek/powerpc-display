@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <string.h>
 #include "g4client.h"
 
 /* Tiger's TCP delayed-ACK default (3) can stall bursts of screen data;
@@ -42,9 +43,11 @@ static BOOL network_tuned(void) { int v = delayed_ack_value(); return v == 2 || 
     NSButton    *denyButton;
     NSButton    *loginBox;
     int          state;
+    NSCursor    *remoteCursor;      /* the other Mac's pointer, as our system cursor */
 }
 - (void)showStatus:(NSDictionary *)info;
 - (void)updateNetButton;
+- (void)setRemoteCursor:(NSDictionary *)info;
 @end
 
 static G4AppDelegate *gDelegate = nil;
@@ -58,6 +61,20 @@ static void status_hook(int st, const char *text)
                           [NSNumber numberWithInt:st], @"state",
                           (s ? s : @""), @"text", nil];
     [gDelegate performSelectorOnMainThread:@selector(showStatus:) withObject:info waitUntilDone:NO];
+    [pool release];
+}
+
+/* called on the engine thread: build the cursor on the main thread */
+static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
+{
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    NSDictionary *info = nil;
+    if (argb && w > 0 && h > 0)
+        info = [NSDictionary dictionaryWithObjectsAndKeys:
+                [NSData dataWithBytes:argb length:(unsigned)(w * h * 4)], @"px",
+                [NSNumber numberWithInt:w], @"w", [NSNumber numberWithInt:h], @"h",
+                [NSNumber numberWithInt:hx], @"hx", [NSNumber numberWithInt:hy], @"hy", nil];
+    [gDelegate performSelectorOnMainThread:@selector(setRemoteCursor:) withObject:info waitUntilDone:NO];
     [pool release];
 }
 
@@ -220,6 +237,11 @@ static void status_hook(int st, const char *text)
     [window makeKeyAndOrderFront:nil];
 
     g4c_set_app_mode(1);
+    /* hardware cursor unless turned off with:
+       defaults write local.ppcdisplay.client hardwareCursor -bool NO */
+    g4c_set_hardware_cursor([ud objectForKey:@"hardwareCursor"] ? [ud boolForKey:@"hardwareCursor"] : YES);
+    g4c_set_cursor_hook(cursor_hook);
+    [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(keepCursor:) userInfo:nil repeats:YES];
     g4c_set_depth(mode == 1 ? 32 : mode == 2 ? 16 : 0);
     g4c_set_status_hook(status_hook);
     [NSThread detachNewThreadSelector:@selector(engineThread:) toTarget:self withObject:nil];
@@ -254,6 +276,9 @@ static void status_hook(int st, const char *text)
         [NSApp activateIgnoringOtherApps:YES];
         [window makeKeyAndOrderFront:nil];
     }
+
+    if (state == G4C_CONNECTED && prev != G4C_CONNECTED)
+        [NSApp activateIgnoringOtherApps:YES];      /* our cursor applies while we're frontmost */
 
     /* coming back from full screen: bring the window forward */
     if (prev == G4C_CONNECTED && state != G4C_CONNECTED) {
@@ -304,6 +329,43 @@ static void status_hook(int st, const char *text)
     [as executeAndReturnError:&err];
     if (err) NSLog(@"PowerPC Display: Bonjour not restarted: %@", err);
     else [detailField setStringValue:@"Restarting Bonjour..."];
+}
+
+- (void)setRemoteCursor:(NSDictionary *)info
+{
+    NSBitmapImageRep *rep;
+    NSImage *img;
+    int w, h;
+    if (!info) {
+        [remoteCursor release];
+        remoteCursor = nil;
+        [[NSCursor arrowCursor] set];
+        return;
+    }
+    w = [[info objectForKey:@"w"] intValue];
+    h = [[info objectForKey:@"h"] intValue];
+    /* premultiplied A,R,G,B bytes: NSAlphaFirstBitmapFormat (10.4) */
+    rep = [[[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:w pixelsHigh:h
+                                                bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
+                                               colorSpaceName:NSDeviceRGBColorSpace
+                                                 bitmapFormat:NSAlphaFirstBitmapFormat
+                                                  bytesPerRow:w * 4 bitsPerPixel:32] autorelease];
+    if (!rep) return;
+    memcpy([rep bitmapData], [[info objectForKey:@"px"] bytes], (size_t)(w * h * 4));
+    img = [[[NSImage alloc] initWithSize:NSMakeSize(w, h)] autorelease];
+    [img addRepresentation:rep];
+    [remoteCursor release];
+    remoteCursor = [[NSCursor alloc] initWithImage:img
+                                           hotSpot:NSMakePoint([[info objectForKey:@"hx"] intValue],
+                                                               [[info objectForKey:@"hy"] intValue])];
+    [remoteCursor set];
+}
+
+/* other things (our hidden window's cursor rects, other apps) may reset the
+   cursor; keep ours while showing the other Mac */
+- (void)keepCursor:(NSTimer *)t
+{
+    if (state == G4C_CONNECTED && remoteCursor) [remoteCursor set];
 }
 
 - (void)acceptPairing:(id)sender { g4c_pair_answer(1); [pairButton setHidden:YES]; [denyButton setHidden:YES]; }

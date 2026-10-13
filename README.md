@@ -276,6 +276,14 @@ Open Anyway.
 - Direct framebuffer drawing copies with 8-byte floating-point stores rather
   than `memcpy`: the system copy uses `dcbz`, which traps on every cache line
   in uncached video memory.
+- The pointer on the PowerPC Mac is its real (hardware) cursor, moved and
+  re-shaped from the Apple Silicon Mac: moving the mouse costs the PowerPC
+  Mac nothing and never delays a frame. If it misbehaves on some machine,
+  go back to the drawn pointer with
+  `defaults write local.ppcdisplay.client hardwareCursor -bool NO`.
+- On G4 and G5 the video (4:2:2) conversion uses AltiVec, 8 pixels at a
+  time; tested bit-identical to the plain version over every input
+  combination.
 - Only the 16-row bands that changed are uploaded to the graphics card, so
   a change at the top and one at the bottom of the screen don't upload
   everything in between.
