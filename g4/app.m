@@ -8,6 +8,10 @@
  * While the other Mac is connected the engine takes over the whole screen.
  * Pressing Command-Escape pauses and brings this window back.
  *
+ * Performance menu: stats every 5 s (in the window, and in
+ * ~/Library/Logs/PowerPC Display.log), plus switches for the hardware cursor
+ * and AltiVec so their effect can be measured on this Mac.
+ *
  * Objective-C 1.0 only (no properties, no fast enumeration): Tiger's gcc 4.0.
  */
 #import <Cocoa/Cocoa.h>
@@ -16,7 +20,9 @@
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
+#include <unistd.h>
 #include "g4client.h"
+#include "g4codec.h"
 
 /* Tiger's TCP delayed-ACK default (3) can stall bursts of screen data;
    2 (or 0) is the usual fix. */
@@ -42,6 +48,7 @@ static BOOL network_tuned(void) { int v = delayed_ack_value(); return v == 2 || 
     NSButton    *pairButton;
     NSButton    *denyButton;
     NSButton    *loginBox;
+    NSTextField *statsField;        /* performance stats, when turned on */
     int          state;
     NSCursor    *remoteCursor;      /* the other Mac's pointer, as our system cursor */
 }
@@ -107,6 +114,8 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     NSMenu *main = [[[NSMenu alloc] initWithTitle:@""] autorelease];
     NSMenuItem *appItem = [main addItemWithTitle:@"" action:NULL keyEquivalent:@""];
     NSMenu *appMenu = [[[NSMenu alloc] initWithTitle:@"PowerPC Display"] autorelease];
+    NSMenuItem *perfItem = [main addItemWithTitle:@"" action:NULL keyEquivalent:@""];
+    NSMenu *perfMenu;
     NSMenuItem *winItem = [main addItemWithTitle:@"" action:NULL keyEquivalent:@""];
     NSMenu *winMenu = [[[NSMenu alloc] initWithTitle:@"Window"] autorelease];
     NSMenuItem *show;
@@ -118,6 +127,14 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     [appMenu addItemWithTitle:@"Hide PowerPC Display" action:@selector(hide:) keyEquivalent:@"h"];
     [appMenu addItemWithTitle:@"Quit PowerPC Display" action:@selector(terminate:) keyEquivalent:@"q"];
     [appItem setSubmenu:appMenu];
+
+    perfMenu = [[[NSMenu alloc] initWithTitle:@"Performance"] autorelease];
+    [[perfMenu addItemWithTitle:@"Show Performance Stats" action:@selector(toggleStats:) keyEquivalent:@""] setTarget:self];
+    [[perfMenu addItemWithTitle:@"Open Performance Log" action:@selector(openLog:) keyEquivalent:@""] setTarget:self];
+    [perfMenu addItem:[NSMenuItem separatorItem]];
+    [[perfMenu addItemWithTitle:@"Use Hardware Cursor (from next connection)" action:@selector(toggleHardwareCursor:) keyEquivalent:@""] setTarget:self];
+    [[perfMenu addItemWithTitle:@"Use AltiVec for Video" action:@selector(toggleAltivec:) keyEquivalent:@""] setTarget:self];
+    [perfItem setSubmenu:perfMenu];
 
     [winMenu addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
     [winMenu addItemWithTitle:@"Close" action:@selector(performClose:) keyEquivalent:@"w"];
@@ -138,7 +155,7 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     NSImageView *icon;
     NSTextField *label;
 
-    window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 236)
+    window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 280)
                                          styleMask:(NSTitledWindowMask | NSClosableWindowMask | NSMiniaturizableWindowMask)
                                            backing:NSBackingStoreBuffered
                                              defer:NO];
@@ -146,23 +163,23 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     [window setReleasedWhenClosed:NO];
     v = [window contentView];
 
-    icon = [[[NSImageView alloc] initWithFrame:NSMakeRect(20, 152, 64, 64)] autorelease];
+    icon = [[[NSImageView alloc] initWithFrame:NSMakeRect(20, 196, 64, 64)] autorelease];
     [icon setImage:[NSApp applicationIconImage]];
     [v addSubview:icon];
 
-    titleField = [self labelWithFrame:NSMakeRect(100, 192, 340, 22) size:14 bold:YES];
+    titleField = [self labelWithFrame:NSMakeRect(100, 236, 340, 22) size:14 bold:YES];
     [titleField setStringValue:@"Starting..."];
     [v addSubview:titleField];
 
-    detailField = [self labelWithFrame:NSMakeRect(100, 128, 340, 60) size:11 bold:NO];
+    detailField = [self labelWithFrame:NSMakeRect(100, 172, 340, 60) size:11 bold:NO];
     [v addSubview:detailField];
 
-    machineField = [self labelWithFrame:NSMakeRect(20, 96, 290, 28) size:10 bold:NO];
+    machineField = [self labelWithFrame:NSMakeRect(20, 140, 290, 28) size:10 bold:NO];
     [machineField setTextColor:[NSColor disabledControlTextColor]];
     [machineField setStringValue:[NSString stringWithFormat:@"This Mac: %s", g4c_machine_summary()]];
     [v addSubview:machineField];
 
-    netButton = [[[NSButton alloc] initWithFrame:NSMakeRect(304, 94, 142, 28)] autorelease];
+    netButton = [[[NSButton alloc] initWithFrame:NSMakeRect(304, 138, 142, 28)] autorelease];
     [netButton setBezelStyle:NSRoundedBezelStyle];
     [[netButton cell] setControlSize:NSSmallControlSize];
     [netButton setFont:[NSFont systemFontOfSize:[NSFont smallSystemFontSize]]];
@@ -171,10 +188,10 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     [v addSubview:netButton];
     [self updateNetButton];
 
-    label = [self labelWithFrame:NSMakeRect(20, 64, 56, 18) size:13 bold:NO];
+    label = [self labelWithFrame:NSMakeRect(20, 108, 56, 18) size:13 bold:NO];
     [label setStringValue:@"Colour:"];
     [v addSubview:label];
-    depthPopup = [[[NSPopUpButton alloc] initWithFrame:NSMakeRect(76, 58, 330, 26) pullsDown:NO] autorelease];
+    depthPopup = [[[NSPopUpButton alloc] initWithFrame:NSMakeRect(76, 102, 330, 26) pullsDown:NO] autorelease];
     [depthPopup addItemWithTitle:[NSString stringWithFormat:@"Automatic (%@ on this Mac)",
                                   (g4c_auto_depth() == 16 ? @"Thousands" : @"Millions")]];
     [depthPopup addItemWithTitle:@"Millions of colours (32-bit)"];
@@ -183,12 +200,12 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     [depthPopup setAction:@selector(changeDepth:)];
     [v addSubview:depthPopup];
 
-    loginBox = [self checkboxWithFrame:NSMakeRect(20, 30, 300, 20)
+    loginBox = [self checkboxWithFrame:NSMakeRect(20, 74, 300, 20)
                                  title:@"Open PowerPC Display at login"
                                 action:@selector(toggleLogin:)];
     [v addSubview:loginBox];
 
-    bonjourButton = [[[NSButton alloc] initWithFrame:NSMakeRect(196, 14, 150, 32)] autorelease];
+    bonjourButton = [[[NSButton alloc] initWithFrame:NSMakeRect(196, 58, 150, 32)] autorelease];
     [bonjourButton setBezelStyle:NSRoundedBezelStyle];
     [bonjourButton setTitle:@"Restart Bonjour..."];
     [bonjourButton setTarget:self];
@@ -197,14 +214,14 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     [v addSubview:bonjourButton];
 
     /* pairing: shown only while a new Mac asks to pair */
-    denyButton = [[[NSButton alloc] initWithFrame:NSMakeRect(196, 14, 130, 32)] autorelease];
+    denyButton = [[[NSButton alloc] initWithFrame:NSMakeRect(196, 58, 130, 32)] autorelease];
     [denyButton setBezelStyle:NSRoundedBezelStyle];
     [denyButton setTitle:@"Don't Pair"];
     [denyButton setTarget:self];
     [denyButton setAction:@selector(denyPairing:)];
     [denyButton setHidden:YES];
     [v addSubview:denyButton];
-    pairButton = [[[NSButton alloc] initWithFrame:NSMakeRect(346, 14, 96, 32)] autorelease];
+    pairButton = [[[NSButton alloc] initWithFrame:NSMakeRect(346, 58, 96, 32)] autorelease];
     [pairButton setBezelStyle:NSRoundedBezelStyle];
     [pairButton setTitle:@"Pair"];
     [pairButton setKeyEquivalent:@"\r"];
@@ -213,15 +230,20 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     [pairButton setHidden:YES];
     [v addSubview:pairButton];
 
-    pauseButton = [[[NSButton alloc] initWithFrame:NSMakeRect(346, 14, 96, 32)] autorelease];
+    pauseButton = [[[NSButton alloc] initWithFrame:NSMakeRect(346, 58, 96, 32)] autorelease];
     [pauseButton setBezelStyle:NSRoundedBezelStyle];
     [pauseButton setTitle:@"Pause"];
     [pauseButton setTarget:self];
     [pauseButton setAction:@selector(togglePause:)];
     [v addSubview:pauseButton];
 
+    statsField = [self labelWithFrame:NSMakeRect(20, 6, 420, 42) size:10 bold:NO];
+    [statsField setTextColor:[NSColor disabledControlTextColor]];
+    [statsField setSelectable:YES];        /* so the numbers can be copied */
+    [v addSubview:statsField];
+
     [window center];
-    [window setFrameAutosaveName:@"PowerPCDisplayWindow"];
+    [window setFrameAutosaveName:@"PowerPCDisplayWindow2"];   /* taller than 0.8's window */
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note
@@ -241,6 +263,10 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
        defaults write local.ppcdisplay.client hardwareCursor -bool NO */
     g4c_set_hardware_cursor([ud objectForKey:@"hardwareCursor"] ? [ud boolForKey:@"hardwareCursor"] : YES);
     g4c_set_cursor_hook(cursor_hook);
+    if ([ud objectForKey:@"altivec"]) g4_yuv_set_simd([ud boolForKey:@"altivec"]);
+    if ([ud boolForKey:@"showStats"]) g4c_set_verbose(1);
+    [self updateStats:nil];
+    [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(updateStats:) userInfo:nil repeats:YES];
     [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(keepCursor:) userInfo:nil repeats:YES];
     g4c_set_depth(mode == 1 ? 32 : mode == 2 ? 16 : 0);
     g4c_set_status_hook(status_hook);
@@ -368,6 +394,68 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     if (state == G4C_CONNECTED && remoteCursor) [remoteCursor set];
 }
 
+/* ---- Performance menu ---- */
+
+static NSString *log_path(void)
+{
+    return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs/PowerPC Display.log"];
+}
+
+- (void)updateStats:(NSTimer *)t
+{
+    char buf[400];
+    if (!g4c_verbose()) { [statsField setStringValue:@""]; return; }
+    g4c_stats_text(buf, sizeof buf);
+    [statsField setStringValue:(buf[0] ? [NSString stringWithUTF8String:buf]
+                                       : @"Performance stats are on: they appear here (and in the log) after 5 s of showing your Mac.")];
+}
+
+- (void)toggleStats:(id)sender
+{
+    BOOL on = !g4c_verbose();
+    g4c_set_verbose(on);
+    [[NSUserDefaults standardUserDefaults] setBool:on forKey:@"showStats"];
+    [self updateStats:nil];
+}
+
+- (void)openLog:(id)sender
+{
+    fflush(stderr);
+    if (![[NSWorkspace sharedWorkspace] openFile:log_path() withApplication:@"Console"])
+        [[NSWorkspace sharedWorkspace] openFile:log_path()];
+}
+
+- (void)toggleHardwareCursor:(id)sender
+{
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    BOOL on = !([ud objectForKey:@"hardwareCursor"] ? [ud boolForKey:@"hardwareCursor"] : YES);
+    [ud setBool:on forKey:@"hardwareCursor"];
+    g4c_set_hardware_cursor(on);
+    fprintf(stderr, "hardware cursor %s (from the next connection)\n", on ? "on" : "off");
+}
+
+- (void)toggleAltivec:(id)sender
+{
+    BOOL on = !g4_yuv_get_simd();
+    g4_yuv_set_simd(on);
+    [[NSUserDefaults standardUserDefaults] setBool:on forKey:@"altivec"];
+    fprintf(stderr, "AltiVec video conversion %s\n", on ? "on" : "off");
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)item
+{
+    SEL a = [item action];
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    if (a == @selector(toggleStats:)) [item setState:(g4c_verbose() ? NSOnState : NSOffState)];
+    if (a == @selector(toggleHardwareCursor:))
+        [item setState:(([ud objectForKey:@"hardwareCursor"] ? [ud boolForKey:@"hardwareCursor"] : YES) ? NSOnState : NSOffState)];
+    if (a == @selector(toggleAltivec:)) {
+        [item setState:(g4_yuv_get_simd() ? NSOnState : NSOffState)];
+        return g4_yuv_simd_available();          /* greyed out on a G3 */
+    }
+    return YES;
+}
+
 - (void)acceptPairing:(id)sender { g4c_pair_answer(1); [pairButton setHidden:YES]; [denyButton setHidden:YES]; }
 - (void)denyPairing:(id)sender  { g4c_pair_answer(0); [pairButton setHidden:YES]; [denyButton setHidden:YES]; }
 
@@ -465,7 +553,12 @@ int main(int argc, char **argv)
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
     NSApplication *app;
-    open_log_file();
+    int i;
+    /* started from Terminal: print to it instead of the log file.
+       "-v" turns the performance stats on for this run. */
+    if (!isatty(2)) open_log_file();
+    for (i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "-v")) g4c_set_verbose(1);
     app = [NSApplication sharedApplication];
     gDelegate = [[G4AppDelegate alloc] init];
     [app setDelegate:gDelegate];

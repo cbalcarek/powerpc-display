@@ -18,7 +18,10 @@ typedef void (*g4c_status_fn)(int state, const char *text);
    "back to the normal arrow". The app sets it as the system cursor. */
 typedef void (*g4c_cursor_fn)(const unsigned char *argb, int w, int h, int hotx, int hoty);
 void g4c_set_cursor_hook(g4c_cursor_fn fn);
-void g4c_set_hardware_cursor(int on);         /* default on (app only) */
+void g4c_set_hardware_cursor(int on);         /* default on (app only); applies from the next connection */
+void g4c_set_verbose(int on);                 /* performance stats every 5 s to stderr (the log) */
+int  g4c_verbose(void);
+void g4c_stats_text(char *buf, int n);        /* latest stats line ("Now: ..." or "Last session ...") */
 
 void g4c_set_status_hook(g4c_status_fn fn);   /* called from the server thread */
 void g4c_set_depth(int depth);                /* 16, 32, or 0 = automatic; applies to the next connection */

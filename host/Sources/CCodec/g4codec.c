@@ -244,12 +244,27 @@ static void yuv8_altivec(const uint8_t *in, uint8_t *out)
 }
 #endif
 
+/* AltiVec can be switched off at run time to compare speeds (the app's
+   Performance menu); the output is the same either way */
+static volatile int yuv_simd_on = 1;
+int  g4_yuv_simd_available(void)
+{
+#if defined(__ALTIVEC__)
+    return 1;
+#else
+    return 0;
+#endif
+}
+void g4_yuv_set_simd(int on) { yuv_simd_on = on != 0; }
+int  g4_yuv_get_simd(void) { return g4_yuv_simd_available() && yuv_simd_on; }
+
 void g4_yuv_row(const uint8_t *in, uint8_t *out, unsigned w)
 {
     unsigned x = 0;
     uint8_t tmp[4];
 #if defined(__ALTIVEC__)
-    for (; x + 8 <= w; x += 8) yuv8_altivec(in + 2 * x, out + 4 * x);
+    if (yuv_simd_on)
+        for (; x + 8 <= w; x += 8) yuv8_altivec(in + 2 * x, out + 4 * x);
 #endif
     for (; x + 1 < w; x += 2) g4_yuv_to_pair(in + 2 * x, out + 4 * x, out + 4 * x + 4);
     if (x < w) g4_yuv_to_pair(in + 2 * x, out + 4 * x, tmp);

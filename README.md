@@ -252,6 +252,16 @@ Open Anyway.
   includes waiting for the display's refresh). Send these when something
   feels slow: they show whether the CPU, the graphics card or the network is
   the limit.
+- The PowerPC app does the same without Terminal: **Performance › Show
+  Performance Stats**. The latest numbers appear at the bottom of its window
+  (the session's average once you press Command-Escape or disconnect), and
+  every 5-second line goes to `~/Library/Logs/PowerPC Display.log`
+  (**Performance › Open Performance Log**). Each line ends with whether
+  AltiVec and the hardware cursor were on, and both can be switched in the
+  same menu to measure what they do on your Mac (AltiVec at once, the cursor
+  from the next connection). Launching
+  `"/Applications/PowerPC Display.app/Contents/MacOS/PowerPCDisplay" -v`
+  from Terminal prints the stats there instead.
 - `--inflight 1` on the Apple Silicon Mac trades a little smoothness for the lowest possible
   latency; `3` can help if the PowerPC Mac decodes faster than the network.
 - `--fps 30` halves capture work; the PowerPC Mac still draws the cursor at full rate.
@@ -279,8 +289,8 @@ Open Anyway.
 - The pointer on the PowerPC Mac is its real (hardware) cursor, moved and
   re-shaped from the Apple Silicon Mac: moving the mouse costs the PowerPC
   Mac nothing and never delays a frame. If it misbehaves on some machine,
-  go back to the drawn pointer with
-  `defaults write local.ppcdisplay.client hardwareCursor -bool NO`.
+  go back to the drawn pointer with **Performance › Use Hardware Cursor**
+  (or `defaults write local.ppcdisplay.client hardwareCursor -bool NO`).
 - On G4 and G5 the video (4:2:2) conversion uses AltiVec, 8 pixels at a
   time; tested bit-identical to the plain version over every input
   combination.

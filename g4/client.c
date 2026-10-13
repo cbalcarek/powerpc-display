@@ -47,6 +47,7 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,6 +70,9 @@ static int opt_hwcursor = 1;   /* app: show the pointer as the real (hardware) c
 static g4c_cursor_fn cursor_hook = NULL;
 static volatile int g_paused = 0;
 static void report(int state, const char *text);
+static void stats_line(char *out, size_t n, double secs, double frames, double draws, double bytes,
+                       double decode_ms, double wait_ms, double upload_ms, double upload_kb, double flush_ms);
+static void set_stats_text(const char *head, const char *line);
 
 /* ------------------------------------------------------------------ */
 
@@ -256,6 +260,9 @@ typedef struct {
     unsigned stat_frames, stat_draws;
     double stat_bytes, stat_decode_ms;
     double stat_wait_ms, stat_upload_ms, stat_flush_ms, stat_upload_kb;
+    /* whole-session totals (performance stats) */
+    double tot_secs, tot_frames, tot_draws, tot_bytes, tot_decode_ms;
+    double tot_wait_ms, tot_upload_ms, tot_flush_ms, tot_upload_kb;
 
     /* liveness: once the other Mac has sent a PING it pings every second;
        if it goes quiet (cable pulled, Mac asleep or crashed) give the
@@ -1074,18 +1081,33 @@ static void run_session(int fd)
 
             if ((opt_verbose || opt_test) && now_ms() - s.stat_t0 > 5000) {
                 double secs = (now_ms() - s.stat_t0) / 1000.0;
-                double nd = s.stat_draws ? (double)s.stat_draws : 1.0;
-                fprintf(stderr, "%.1f frames/s, %.1f draws/s, %.0f KB/s in, decode %.1f ms/frame, "
-                                "GPU wait %.1f ms/frame, upload %.1f ms + %.0f KB/draw, flush %.1f ms/draw\n",
-                        s.stat_frames / secs, s.stat_draws / secs, s.stat_bytes / 1024.0 / secs,
-                        s.stat_frames ? s.stat_decode_ms / s.stat_frames : 0.0,
-                        s.stat_frames ? s.stat_wait_ms / s.stat_frames : 0.0,
-                        s.stat_upload_ms / nd, s.stat_upload_kb / nd, s.stat_flush_ms / nd);
+                char line[300];
+                s.tot_secs += secs; s.tot_frames += s.stat_frames; s.tot_draws += s.stat_draws;
+                s.tot_bytes += s.stat_bytes; s.tot_decode_ms += s.stat_decode_ms;
+                s.tot_wait_ms += s.stat_wait_ms; s.tot_upload_ms += s.stat_upload_ms;
+                s.tot_flush_ms += s.stat_flush_ms; s.tot_upload_kb += s.stat_upload_kb;
+                stats_line(line, sizeof line, secs, s.stat_frames, s.stat_draws, s.stat_bytes,
+                           s.stat_decode_ms, s.stat_wait_ms, s.stat_upload_ms, s.stat_upload_kb, s.stat_flush_ms);
+                fprintf(stderr, "%s\n", line);
+                set_stats_text("Now: ", line);
+                s.stat_t0 = now_ms(); s.stat_frames = s.stat_draws = 0;
+                s.stat_bytes = s.stat_decode_ms = 0;
+                s.stat_wait_ms = s.stat_upload_ms = s.stat_flush_ms = s.stat_upload_kb = 0;
+            } else if (!(opt_verbose || opt_test) && now_ms() - s.stat_t0 > 5000) {
+                /* stats off: keep the counters from growing without limit */
                 s.stat_t0 = now_ms(); s.stat_frames = s.stat_draws = 0;
                 s.stat_bytes = s.stat_decode_ms = 0;
                 s.stat_wait_ms = s.stat_upload_ms = s.stat_flush_ms = s.stat_upload_kb = 0;
             }
         }
+    }
+    if ((opt_verbose || opt_test) && s.tot_secs >= 4.5) {
+        char line[300], head[80];
+        stats_line(line, sizeof line, s.tot_secs, s.tot_frames, s.tot_draws, s.tot_bytes,
+                   s.tot_decode_ms, s.tot_wait_ms, s.tot_upload_ms, s.tot_upload_kb, s.tot_flush_ms);
+        snprintf(head, sizeof head, "Last session (%.0f s, average): ", s.tot_secs);
+        fprintf(stderr, "%s%s\n", head, line);
+        set_stats_text(head, line);
     }
     if (s.gl_tried) gl_teardown(&s);
     if (s.hw) cursor_hook(NULL, 0, 0, 0, 0);       /* back to the normal arrow */
@@ -1118,6 +1140,42 @@ void g4c_stop(void) { quit_requested = 1; }
 int  g4c_bonjour_stuck(void) { return bonjour_stuck; }
 void g4c_set_cursor_hook(g4c_cursor_fn fn) { cursor_hook = fn; }
 void g4c_set_hardware_cursor(int on) { opt_hwcursor = on != 0; }
+
+/* ---- performance stats (CLI -v, or the app's Performance menu) ---- */
+static pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
+static char stats_text[400];
+
+static void stats_line(char *out, size_t n, double secs, double frames, double draws, double bytes,
+                       double decode_ms, double wait_ms, double upload_ms, double upload_kb, double flush_ms)
+{
+    double nd = draws > 0 ? draws : 1.0, nf = frames > 0 ? frames : 1.0;
+    if (secs <= 0) secs = 1;
+    snprintf(out, n, "%.1f frames/s, %.1f draws/s, %.0f KB/s in, decode %.1f ms/frame, "
+                     "GPU wait %.1f ms/frame, upload %.1f ms + %.0f KB/draw, flush %.1f ms/draw "
+                     "[AltiVec %s, hardware cursor %s]",
+             frames / secs, draws / secs, bytes / 1024.0 / secs, decode_ms / nf, wait_ms / nf,
+             upload_ms / nd, upload_kb / nd, flush_ms / nd,
+             g4_yuv_simd_available() ? (g4_yuv_get_simd() ? "on" : "off") : "n/a",
+             (app_mode && cursor_hook && opt_hwcursor) ? "on" : "off");
+}
+
+static void set_stats_text(const char *head, const char *line)
+{
+    pthread_mutex_lock(&stats_lock);
+    snprintf(stats_text, sizeof stats_text, "%s%s", head, line);
+    pthread_mutex_unlock(&stats_lock);
+}
+
+void g4c_set_verbose(int on) { opt_verbose = on != 0; }
+int  g4c_verbose(void) { return opt_verbose; }
+
+void g4c_stats_text(char *buf, int n)
+{
+    if (n <= 0) return;
+    pthread_mutex_lock(&stats_lock);
+    snprintf(buf, (size_t)n, "%s", stats_text);
+    pthread_mutex_unlock(&stats_lock);
+}
 
 /* report a state change (deduplicated) to the app, or to stderr */
 static void report(int state, const char *text)

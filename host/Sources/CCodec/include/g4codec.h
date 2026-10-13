@@ -198,6 +198,9 @@ void g4_yuv_from_pair(const uint8_t *argb0, const uint8_t *argb1, uint8_t *out4)
 void g4_yuv_to_pair(const uint8_t *in4, uint8_t *argb0, uint8_t *argb1);
 /* a whole row of w pixels (AltiVec on G4/G5 builds; identical results) */
 void g4_yuv_row(const uint8_t *in, uint8_t *out, unsigned w);
+int  g4_yuv_simd_available(void);   /* 1 if built with AltiVec */
+void g4_yuv_set_simd(int on);       /* default on; for speed comparisons */
+int  g4_yuv_get_simd(void);
 
 int  g4dec_init(g4_decoder *d, uint8_t *fb, int width, int height, int depth);   /* 0 ok, -1 bad args / no memory */
 int  g4dec_enable_cache(g4_decoder *d, int slots);   /* 0 ok, -1 out of memory */
