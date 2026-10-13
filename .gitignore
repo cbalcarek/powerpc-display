@@ -7,6 +7,7 @@ g4/g4display
 g4/.m1host
 g4/.m1hosts
 test/test_codec
+test/test_auth
 *.iso
 releases/
 g4/*.zip
