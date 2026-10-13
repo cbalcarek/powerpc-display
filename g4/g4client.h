@@ -7,7 +7,8 @@ enum {
     G4C_WAITING   = 0,   /* listening, advertised on Bonjour   */
     G4C_CONNECTED = 1,   /* showing the M1's screen            */
     G4C_PAUSED    = 2,   /* not listening (user paused)        */
-    G4C_ERROR     = 3
+    G4C_ERROR     = 3,
+    G4C_BONJOUR_STUCK = 4  /* listening, but Bonjour isn't answering for us */
 };
 
 typedef void (*g4c_status_fn)(int state, const char *text);
@@ -21,5 +22,6 @@ int  g4c_is_paused(void);
 void g4c_set_app_mode(int on);                /* Cmd+Esc pauses instead of quitting */
 int  g4c_server_run(void);                    /* blocks until g4c_stop() */
 void g4c_stop(void);
+int  g4c_bonjour_stuck(void);
 
 #endif

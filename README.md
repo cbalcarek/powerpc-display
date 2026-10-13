@@ -160,6 +160,17 @@ The same binary runs from Terminal and logs to the console:
 "/Applications/PowerPC Display.app/Contents/MacOS/PowerPCDisplay" -v
 ```
 
+Finding the PowerPC Mac: the app remembers the address that last worked
+(also after quitting) and tries it first, so it reconnects even if Bonjour is
+having a bad day; Bonjour is used when that address doesn't answer. It also
+tries every PowerPC Mac Bonjour lists, so a Tiger VM that was shut down
+(which can linger in the list for an hour) doesn't block a real one.
+
+On the PowerPC Mac, the app checks every minute that Bonjour still answers
+for it and registers again if not. If Bonjour stays stuck the window says
+"Bonjour isn't responding" with a **Restart Bonjour…** button (asks for an
+administrator password; same as `sudo killall mDNSResponder` in Terminal).
+
 More than one PowerPC Mac on the network: `--name "iMac G4"` (its computer
 name). Bonjour blocked: pass its IP address as the first argument.
 

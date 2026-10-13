@@ -839,6 +839,11 @@ static volatile int g_paused = 0;
 static int lfd = -1;
 static DNSServiceRef bonjour = NULL;
 static char bonjour_name[256];
+/* Bonjour health: Tiger's mDNSResponder can stop answering for us (seen after
+   replacing the app); we check ourselves and re-register, and as a last
+   resort the app offers to restart mDNSResponder */
+static double bonjour_reg_ms = 0, bonjour_next_check = 0;
+static int bonjour_retried = 0, bonjour_stuck = 0;
 
 void g4c_set_status_hook(g4c_status_fn fn) { status_hook = fn; }
 void g4c_set_depth(int depth) { opt_depth = (depth == 16 || depth == 32) ? depth : 0; }
@@ -846,6 +851,7 @@ void g4c_set_paused(int paused) { g_paused = paused; }
 int  g4c_is_paused(void) { return g_paused; }
 void g4c_set_app_mode(int on) { app_mode = on; }
 void g4c_stop(void) { quit_requested = 1; }
+int  g4c_bonjour_stuck(void) { return bonjour_stuck; }
 
 /* report a state change (deduplicated) to the app, or to stderr */
 static void report(int state, const char *text)
@@ -862,6 +868,12 @@ static void report(int state, const char *text)
 static void report_waiting(void)
 {
     char msg[512];
+    if (bonjour_stuck) {
+        report(G4C_BONJOUR_STUCK,
+               "Bonjour on this Mac isn't answering, so your Mac may not find it (it can still connect if it was "
+               "connected before). Click Restart Bonjour to fix it.");
+        return;
+    }
     if (bonjour_name[0])
         snprintf(msg, sizeof msg, "Waiting for your Mac. Open PowerPC Display on it; this Mac shows up as \"%s\".", bonjour_name);
     else
@@ -875,6 +887,76 @@ static void DNSSD_API bonjour_cb(DNSServiceRef ref, DNSServiceFlags flags, DNSSe
     (void)ref; (void)flags; (void)type; (void)domain; (void)ctx;
     if (err == kDNSServiceErr_NoError) snprintf(bonjour_name, sizeof bonjour_name, "%s", name);
     else fprintf(stderr, "Bonjour error %d\n", (int)err);
+}
+
+static void bonjour_register(void)
+{
+    if (bonjour) { DNSServiceRefDeallocate(bonjour); bonjour = NULL; }
+    /* name NULL = this Mac's computer name (System Preferences › Sharing) */
+    bonjour_name[0] = 0;
+    bonjour_reg_ms = now_ms();
+    if (DNSServiceRegister(&bonjour, 0, 0, NULL, "_g4display._tcp", NULL, NULL,
+                           htons((unsigned short)opt_port), 0, NULL, bonjour_cb, NULL) != kDNSServiceErr_NoError) {
+        fprintf(stderr, "Bonjour registration failed; your Mac can still connect by IP address\n");
+        bonjour = NULL;
+    }
+}
+
+static void DNSSD_API selfcheck_cb(DNSServiceRef ref, DNSServiceFlags flags, uint32_t ifindex,
+                                   DNSServiceErrorType err, const char *fullname, const char *host,
+                                   uint16_t port, uint16_t txtlen, const unsigned char *txt, void *ctx)
+{
+    (void)ref; (void)flags; (void)ifindex; (void)fullname; (void)host; (void)port; (void)txtlen; (void)txt;
+    *(int *)ctx = err == kDNSServiceErr_NoError ? 1 : -1;
+}
+
+/* Ask our own Bonjour service where we are. 1 = it answered, 0 = it didn't. */
+static int bonjour_self_check(void)
+{
+    DNSServiceRef r = NULL;
+    int result = 0, fd;
+    double deadline = now_ms() + 3000;
+    if (!bonjour || !bonjour_name[0]) return 0;
+    if (DNSServiceResolve(&r, 0, 0, bonjour_name, "_g4display._tcp", "local.", selfcheck_cb, &result)
+        != kDNSServiceErr_NoError) return 0;
+    fd = DNSServiceRefSockFD(r);
+    while (fd >= 0 && result == 0 && now_ms() < deadline) {
+        fd_set rf;
+        struct timeval tv = { 0, 200000 };
+        FD_ZERO(&rf); FD_SET(fd, &rf);
+        if (select(fd + 1, &rf, NULL, NULL, &tv) > 0 && DNSServiceProcessResult(r) != kDNSServiceErr_NoError) break;
+    }
+    DNSServiceRefDeallocate(r);
+    return result == 1;
+}
+
+/* while waiting: keep our Bonjour entry alive and answering */
+static void bonjour_maintain(void)
+{
+    double t = now_ms();
+    if (lfd < 0) return;
+    if (!bonjour) {                                   /* lost (e.g. mDNSResponder restarted) */
+        if (t - bonjour_reg_ms > 5000) { fprintf(stderr, "Bonjour: registering again\n"); bonjour_register(); bonjour_next_check = t + 8000; }
+        return;
+    }
+    if (t < bonjour_next_check) return;
+    if (bonjour_self_check()) {
+        if (bonjour_stuck) fprintf(stderr, "Bonjour is answering again\n");
+        bonjour_stuck = 0; bonjour_retried = 0;
+        bonjour_next_check = t + 60000;
+        /* refresh the announcement now and then, in case the network changed */
+        if (t - bonjour_reg_ms > 10 * 60000) { bonjour_register(); bonjour_next_check = t + 8000; }
+    } else if (!bonjour_retried) {
+        fprintf(stderr, "Bonjour didn't answer for this Mac; registering again\n");
+        bonjour_register();
+        bonjour_retried = 1;
+        bonjour_next_check = t + 8000;
+    } else {
+        if (!bonjour_stuck) fprintf(stderr, "Bonjour still isn't answering (try: sudo killall mDNSResponder)\n");
+        bonjour_stuck = 1;
+        bonjour_retried = 0;                          /* keep trying a re-register now and then */
+        bonjour_next_check = t + 30000;
+    }
 }
 
 static int open_listener(void)
@@ -892,13 +974,9 @@ static int open_listener(void)
         close(lfd); lfd = -1;
         return -1;
     }
-    /* Bonjour: name NULL = this Mac's computer name (System Preferences › Sharing) */
-    bonjour_name[0] = 0;
-    if (DNSServiceRegister(&bonjour, 0, 0, NULL, "_g4display._tcp", NULL, NULL,
-                           htons((unsigned short)opt_port), 0, NULL, bonjour_cb, NULL) != kDNSServiceErr_NoError) {
-        fprintf(stderr, "Bonjour registration failed; connect from the M1 by IP address instead\n");
-        bonjour = NULL;
-    }
+    bonjour_register();
+    bonjour_next_check = now_ms() + 5000;      /* first self-check shortly after starting */
+    bonjour_retried = 0; bonjour_stuck = 0;
     return 0;
 }
 
@@ -931,6 +1009,7 @@ int g4c_server_run(void)
             sleep(3);
             continue;
         }
+        bonjour_maintain();
         report_waiting();
 
         /* wait for a connection while servicing Bonjour; wake every 0.5 s

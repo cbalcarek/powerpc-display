@@ -34,6 +34,7 @@ static BOOL network_tuned(void) { int v = delayed_ack_value(); return v == 2 || 
     NSPopUpButton *depthPopup;
     NSTextField *machineField;
     NSButton    *netButton;
+    NSButton    *bonjourButton;
     NSButton    *loginBox;
     int          state;
 }
@@ -163,6 +164,14 @@ static void status_hook(int st, const char *text)
                                 action:@selector(toggleLogin:)];
     [v addSubview:loginBox];
 
+    bonjourButton = [[[NSButton alloc] initWithFrame:NSMakeRect(196, 14, 150, 32)] autorelease];
+    [bonjourButton setBezelStyle:NSRoundedBezelStyle];
+    [bonjourButton setTitle:@"Restart Bonjour..."];
+    [bonjourButton setTarget:self];
+    [bonjourButton setAction:@selector(restartBonjour:)];
+    [bonjourButton setHidden:YES];
+    [v addSubview:bonjourButton];
+
     pauseButton = [[[NSButton alloc] initWithFrame:NSMakeRect(346, 14, 96, 32)] autorelease];
     [pauseButton setBezelStyle:NSRoundedBezelStyle];
     [pauseButton setTitle:@"Pause"];
@@ -207,10 +216,12 @@ static void status_hook(int st, const char *text)
     case G4C_WAITING:   [titleField setStringValue:@"Waiting for your Mac"]; break;
     case G4C_CONNECTED: [titleField setStringValue:@"Showing your Mac"];     break;
     case G4C_PAUSED:    [titleField setStringValue:@"Paused"];               break;
+    case G4C_BONJOUR_STUCK: [titleField setStringValue:@"Bonjour isn't responding"]; break;
     default:            [titleField setStringValue:@"Something's wrong"];    break;
     }
     [detailField setStringValue:[info objectForKey:@"text"]];
     [pauseButton setTitle:(state == G4C_PAUSED ? @"Resume" : @"Pause")];
+    [bonjourButton setHidden:(state != G4C_BONJOUR_STUCK)];
 
     /* coming back from full screen: bring the window forward */
     if (prev == G4C_CONNECTED && state != G4C_CONNECTED) {
@@ -249,6 +260,18 @@ static void status_hook(int st, const char *text)
     [as executeAndReturnError:&err];
     if (err) NSLog(@"PowerPC Display: network fix not applied: %@", err);   /* includes Cancel */
     [self updateNetButton];
+}
+
+/* Tiger's launchd starts mDNSResponder again straight away; the engine
+   notices and registers this Mac again */
+- (void)restartBonjour:(id)sender
+{
+    NSDictionary *err = nil;
+    NSAppleScript *as = [[[NSAppleScript alloc] initWithSource:
+        @"do shell script \"/usr/bin/killall mDNSResponder\" with administrator privileges"] autorelease];
+    [as executeAndReturnError:&err];
+    if (err) NSLog(@"PowerPC Display: Bonjour not restarted: %@", err);
+    else [detailField setStringValue:@"Restarting Bonjour..."];
 }
 
 - (void)changeDepth:(id)sender

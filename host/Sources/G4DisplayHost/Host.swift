@@ -80,6 +80,27 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     /// where the PowerPC Mac was last reached: tried first on reconnect (e.g.
     /// after switching Extend/Mirror), before asking Bonjour again
     private var lastEndpoint: (host: String, port: UInt16, name: String)?
+    /// after a bad handshake there (e.g. UTM's port forward with nothing
+    /// behind it), leave the remembered address alone for a while
+    private var endpointSkipUntil: Double = 0
+    private static let endpointKey = "lastEndpoint"
+
+    /// Remember where the PowerPC Mac was reached, across launches too, so a
+    /// stuck Bonjour on either Mac doesn't stop it reconnecting.
+    private func remember(_ host: String, _ port: UInt16, _ name: String) {
+        lastEndpoint = (host, port, name)
+        UserDefaults.standard.set(["host": host, "port": Int(port), "name": name], forKey: Self.endpointKey)
+    }
+
+    private func loadRememberedEndpoint() {
+        guard cfg.g4Address == nil,
+              let d = UserDefaults.standard.dictionary(forKey: Self.endpointKey),
+              let host = d["host"] as? String, let port = d["port"] as? Int, let name = d["name"] as? String,
+              port > 0, port < 65536
+        else { return }
+        if let wanted = cfg.g4Name, wanted != name { return }
+        lastEndpoint = (host, UInt16(port), name)
+    }
     private var vdisplayName = ""
     private var vdisplay: G4VirtualDisplay?
     private var displayID: CGDirectDisplayID = 0
@@ -96,6 +117,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         _mirror = config.mirror
         _smoothVideo = config.smoothVideo
         super.init()
+        loadRememberedEndpoint()
     }
 
     func start() {
@@ -178,7 +200,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
             if !isEnabled { close(sock); continue }
             announced = false
             guard let hello = readHello(sock) else {
-                log("bad hello"); lastEndpoint = nil; close(sock); sleep(1); continue
+                log("bad hello"); endpointSkipUntil = nowMs() + 30_000; close(sock); sleep(1); continue
             }
             (W, H, depth, slots, widthMM) = (hello.0, hello.1, hello.2, hello.3, hello.4)
             let helloFlags = hello.5
@@ -252,12 +274,15 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
             post(.searching(addr))
             return nil
         }
-        if let ep = lastEndpoint {
-            if let s = connectTCP(host: ep.host, port: ep.port, timeoutMs: 1000) {
-                log("reconnected to \"\(ep.name)\" at \(ep.host):\(ep.port)")
+        // the address that worked last time (this run or a previous one)
+        // first: no Bonjour needed while the PowerPC Mac's address is the same
+        if let ep = lastEndpoint, nowMs() >= endpointSkipUntil {
+            if let s = connectTCP(host: ep.host, port: ep.port, timeoutMs: 700) {
+                log("connected to \"\(ep.name)\" at its last address \(ep.host):\(ep.port)")
+                lastDiscoveryNote = ""
                 return (s, ep.name)
             }
-            lastEndpoint = nil      // gone or moved: find it again with Bonjour
+            // not there (yet): keep it, and also ask Bonjour below
         }
         var found = g4_found()
         let rc: Int32
@@ -277,7 +302,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
                let s = connectTCP(host: "127.0.0.1", port: UInt16(G4_PORT), timeoutMs: 500) {
                 log("found \"\(name)\"; Bonjour lookup failed, connected through 127.0.0.1:\(G4_PORT) (UTM port forward)")
                 lastDiscoveryNote = ""
-                lastEndpoint = ("127.0.0.1", UInt16(G4_PORT), name)
+                remember("127.0.0.1", UInt16(G4_PORT), name)
                 return (s, name)
             }
             switch found.failed_step {
@@ -298,7 +323,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
                 if !host.isEmpty, let s = connectTCP(host: host, port: found.port) {
                     log("found \"\(name)\" at \(host):\(found.port) (system resolver)")
                     lastDiscoveryNote = ""
-                    lastEndpoint = (host, found.port, name)
+                    remember(host, found.port, name)
                     return (s, name)
                 }
                 note("found \"\(name)\" (\(host)) but could not look up its address (error \(found.dns_error))",
@@ -324,7 +349,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         }
         log("connected to \"\(name)\" at \(via):\(found.port)")
         lastDiscoveryNote = ""
-        lastEndpoint = (via, found.port, name)
+        remember(via, found.port, name)
         return (s, name)
     }
 
