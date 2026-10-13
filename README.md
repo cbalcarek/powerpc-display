@@ -65,6 +65,27 @@ Measured on the test desktop (1440×900, 32-bit):
 Thousands (16-bit) colour sends roughly a third less data and halves the
 memory traffic (slight banding on gradients; text is fine).
 
+## Pairing (once per pair of Macs)
+
+The first time a PowerPC Mac and an Apple Silicon Mac meet, both show the
+same 6-digit code: check they match and click **Pair** on both. After that
+they connect without asking. Only paired Macs can receive your screen or
+drive the PowerPC Mac's display, so it's safe on a shared network too.
+
+How it works: both Macs make a fresh X25519 key pair and derive the same
+secret key and code from it (if anyone in between tampered with the
+exchange, the codes wouldn't match). Every later connection, each side proves
+it holds the key (HMAC-SHA512 over fresh random numbers from both sides)
+before any screen data is sent. Keys are in the Apple Silicon Mac's login
+keychain and in `~/Library/Application Support/PowerPC Display/pairing` on
+the PowerPC Mac. Screen data itself isn't encrypted (too costly for a G3/G4);
+pairing controls who can get it.
+
+To start over: **Forget Paired PowerPC Macs…** (menu bar or app menu) on the
+Apple Silicon Mac, **Forget Paired Macs…** in the app menu on the PowerPC Mac.
+
+Both apps need this version: an older PowerPC app is told to update.
+
 ## 1. Network
 
 Plug an Ethernet cable from a USB-C Ethernet adapter on the Apple Silicon Mac
@@ -193,6 +214,19 @@ The address that worked is remembered, so afterwards plain
 `sh ~/g4display/g4/update.sh` is enough. The first time, get the script
 itself with the command the Share window prints.
 
+## If the cable is pulled (or a Mac sleeps)
+
+The Apple Silicon Mac pings every second. If either side hears nothing for
+4 seconds it disconnects: the PowerPC Mac goes back to its own desktop, and
+the Apple Silicon Mac waits and reconnects when it's back.
+
+## Logs
+
+- Apple Silicon Mac: Console.app, search for `local.ppcdisplay.host` (or
+  "PowerPC Display"); also printed when run from Terminal.
+- PowerPC Mac: `~/Library/Logs/PowerPC Display.log` (previous run in
+  `.log.old`); open it with Console.app on Tiger.
+
 ## Releases
 
 Each build also saves a zip for GitHub releases in `releases/` (not part of
@@ -259,7 +293,15 @@ Open Anyway.
 host/Sources/CCodec/      protocol + codec, shared by both machines (C99)
 host/Sources/CVirtualDisplay/  Obj-C wrapper for macOS virtual displays
 host/Sources/CDiscovery/  Bonjour browse/resolve (dns_sd)
-host/Sources/G4DisplayHost/    Apple Silicon app: window + menu bar UI, capture, flow control, cursor
+host/Sources/G4DisplayHost/    Apple Silicon app:
+    Host.swift            state, settings, connect → pair → stream lifecycle
+    HostDiscovery.swift   finding the PowerPC Mac (last address, Bonjour)
+    Pairing.swift         HELLO, pairing, keychain, per-connection proof
+    HostCapture.swift     virtual display, ScreenCaptureKit, changed areas → encoder
+    HostSender.swift      encoding, flow control, pings, ACKs, cursor messages
+    AppController/MenuBar window and menu bar UI;  Cursor.swift  pointer tracking
+host/Sources/CCodec/g4auth.c   pairing crypto (X25519 + HMAC-SHA512), shared by both Macs
+host/Sources/CCodec/g4nacl.c   TweetNaCl (public domain), vendored; RFC test vectors in test/
 host/build-app.sh         builds PowerPC Display.app (Apple Silicon side)
 g4/client.c               PowerPC side: CGL full screen, texture fast path, framebuffer fallback
 g4/app.m                  PowerPC side: the Tiger app window
@@ -272,6 +314,10 @@ test/                     round-trip + fuzz tests (`make -C test`)
 - The video (4:2:2) path is tested the same way: the PowerPC side always
   equals the Apple Silicon Mac's model, including a little-endian encoder
   checked against a big-endian decoder, and becomes exact once video stops.
+- Pairing is tested against RFC 7748 (X25519), SHA-512 and RFC 4231
+  (HMAC-SHA512) vectors on x86 and emulated G3/G4, plus a simulated pairing,
+  reconnect, impostor, decline and pulled-cable run of the real PowerPC engine
+  against a fake Apple Silicon Mac.
 - The codec is tested: every frame decodes byte-identical to what the Apple Silicon Mac
   captured, including scroll detection with and without hints, on x86 and on
   emulated big-endian PowerPC 7450, plus 9,000 corrupted frames under

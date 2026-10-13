@@ -1,9 +1,16 @@
 import Darwin
 import Foundation
+import os
 
+private let logger = Logger(subsystem: "local.ppcdisplay.host", category: "app")
+
+/// Prints to the Terminal (when run from there) and to the unified log, so
+/// problems can be read later in Console.app (search "PowerPC Display" or
+/// subsystem local.ppcdisplay.host) without having started it from Terminal.
 func log(_ s: String) {
     let ts = String(format: "%.3f", Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 1000))
     print("[\(ts)] \(s)")
+    logger.notice("\(s, privacy: .public)")
 }
 
 /// Monotonic milliseconds.
@@ -37,6 +44,10 @@ func connectTCP(host: String, port: UInt16, ifindex: UInt32 = 0, timeoutMs: Int3
     // want megabytes of stale screen sitting in a buffer
     var sndbuf: Int32 = 512 * 1024
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, socklen_t(MemoryLayout<Int32>.size))
+    // a write that can't make progress for 3 s fails instead of blocking the
+    // send queue forever (cable pulled, PowerPC Mac frozen)
+    var sndto = timeval(tv_sec: 3, tv_usec: 0)
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sndto, socklen_t(MemoryLayout<timeval>.size))
 
     // connect with a timeout: a silently dropped connection would otherwise
     // block for over a minute while the UI keeps saying "Looking…"
@@ -55,6 +66,7 @@ func connectTCP(host: String, port: UInt16, ifindex: UInt32 = 0, timeoutMs: Int3
     return fd
 }
 
+/// false on error, including the 3 s send timeout (EAGAIN)
 func writeAll(_ fd: Int32, _ p: UnsafeRawPointer, _ n: Int) -> Bool {
     var off = 0
     while off < n {
@@ -66,6 +78,10 @@ func writeAll(_ fd: Int32, _ p: UnsafeRawPointer, _ n: Int) -> Bool {
         off += r
     }
     return true
+}
+
+func writeAll(_ fd: Int32, _ bytes: [UInt8]) -> Bool {
+    bytes.withUnsafeBytes { writeAll(fd, $0.baseAddress!, $0.count) }
 }
 
 func readAll(_ fd: Int32, _ p: UnsafeMutableRawPointer, _ n: Int) -> Bool {
@@ -80,6 +96,20 @@ func readAll(_ fd: Int32, _ p: UnsafeMutableRawPointer, _ n: Int) -> Bool {
         off += r
     }
     return true
+}
+
+/// Reads one complete message, waiting at most `timeoutMs` for it to start.
+/// Returns (type, payload), or nil on timeout, error or an oversized message.
+func readMessage(_ fd: Int32, timeoutMs: Int32, maxLen: Int = 4096) -> (Int, [UInt8])? {
+    var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+    guard poll(&pfd, 1, timeoutMs) == 1 else { return nil }
+    var hdr = [UInt8](repeating: 0, count: 8)
+    guard readAll(fd, &hdr, 8) else { return nil }
+    let len = Int(be32(hdr, 4))
+    guard len <= maxLen else { return nil }
+    var payload = [UInt8](repeating: 0, count: len)
+    if len > 0, !readAll(fd, &payload, len) { return nil }
+    return (Int(hdr[0]), payload)
 }
 
 @inline(__always) func be16(_ b: [UInt8], _ i: Int) -> Int { Int(b[i]) << 8 | Int(b[i + 1]) }
@@ -107,4 +137,8 @@ func cString<T>(_ tuple: inout T) -> String {
     withUnsafeBytes(of: &tuple) { raw in
         String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
     }
+}
+
+func hexString(_ bytes: [UInt8]) -> String {
+    bytes.map { String(format: "%02x", $0) }.joined()
 }

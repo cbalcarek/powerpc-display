@@ -18,11 +18,12 @@ final class AppModel: ObservableObject {
         switch status {
         case .searching(nil): return "Looking for your PowerPC Mac…"
         case .searching(let addr?): return "Waiting for the PowerPC Mac at \(addr)…"
+        case .pairing(let name, _, _): return "Pair with “\(name)”?"
         case .connected(let name, _, _, _): return "Connected to “\(name)”"
         case .paused: return "Disconnected"
         case .needsScreenRecording: return "Screen Recording permission needed"
         case .failed(let why): return why
-        case .cantReach: return "Found the PowerPC Mac, but can't connect"
+        case .cantReach: return "Not connected to the PowerPC Mac"
         }
     }
 
@@ -32,6 +33,11 @@ final class AppModel: ObservableObject {
             return "Open PowerPC Display on the G3, G4 or G5. Both Macs need an Ethernet cable between them or the same network."
         case .searching:
             return "Open PowerPC Display on the PowerPC Mac."
+        case .pairing(_, let code, let waiting):
+            let c = String(format: "%03u %03u", code / 1000, code % 1000)
+            return waiting
+                ? "Now click Pair on the PowerPC Mac (it shows \(c))."
+                : "Both Macs should show the code \(c). Pair only if they match."
         case .connected(_, let w, let h, let d):
             return mirror
                 ? "Mirroring your main display, scaled to \(w) × \(h) · \(d)-bit colour"
@@ -50,6 +56,7 @@ final class AppModel: ObservableObject {
     var symbol: String {
         switch status {
         case .connected: return "display"
+        case .pairing: return "lock"
         case .paused: return "pause.circle"
         case .needsScreenRecording, .failed, .cantReach: return "exclamationmark.triangle"
         case .searching: return "antenna.radiowaves.left.and.right"
@@ -148,6 +155,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         appMenu.addItem(.separator())
         let show = appMenu.addItem(withTitle: "Show Status Window", action: #selector(showWindow), keyEquivalent: "0")
         show.target = self
+        let forget = appMenu.addItem(withTitle: "Forget Paired PowerPC Macs…", action: #selector(forgetPairingsAction), keyEquivalent: "")
+        forget.target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide PowerPC Display", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "Quit PowerPC Display", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -164,6 +173,8 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         NSApp.mainMenu = main
     }
+
+    @objc private func forgetPairingsAction() { forgetPairings() }
 
     // MARK: - actions (used by both the window and the menu bar)
 
@@ -198,6 +209,15 @@ final class AppController: NSObject, NSApplicationDelegate {
             log("Launch at Login: \(error.localizedDescription)")
         }
         model.launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    func forgetPairings() {
+        let a = NSAlert()
+        a.messageText = "Forget paired PowerPC Macs?"
+        a.informativeText = "Each PowerPC Mac will have to pair again, showing a code on both Macs, the next time it connects."
+        a.addButton(withTitle: "Forget")
+        a.addButton(withTitle: "Cancel")
+        if a.runModal() == .alertFirstButtonReturn { host.forgetPairings() }
     }
 
     func openDisplaySettings() { open("x-apple.systempreferences:com.apple.Displays-Settings.extension") }

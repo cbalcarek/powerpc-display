@@ -12,6 +12,9 @@
  */
 #import <Cocoa/Cocoa.h>
 #include <sys/sysctl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 #include "g4client.h"
 
 /* Tiger's TCP delayed-ACK default (3) can stall bursts of screen data;
@@ -35,6 +38,8 @@ static BOOL network_tuned(void) { int v = delayed_ack_value(); return v == 2 || 
     NSTextField *machineField;
     NSButton    *netButton;
     NSButton    *bonjourButton;
+    NSButton    *pairButton;
+    NSButton    *denyButton;
     NSButton    *loginBox;
     int          state;
 }
@@ -90,6 +95,8 @@ static void status_hook(int st, const char *text)
     NSMenuItem *show;
 
     [appMenu addItemWithTitle:@"About PowerPC Display" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    [[appMenu addItemWithTitle:@"Forget Paired Macs..." action:@selector(forgetPairings:) keyEquivalent:@""] setTarget:self];
     [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:@"Hide PowerPC Display" action:@selector(hide:) keyEquivalent:@"h"];
     [appMenu addItemWithTitle:@"Quit PowerPC Display" action:@selector(terminate:) keyEquivalent:@"q"];
@@ -172,6 +179,23 @@ static void status_hook(int st, const char *text)
     [bonjourButton setHidden:YES];
     [v addSubview:bonjourButton];
 
+    /* pairing: shown only while a new Mac asks to pair */
+    denyButton = [[[NSButton alloc] initWithFrame:NSMakeRect(196, 14, 130, 32)] autorelease];
+    [denyButton setBezelStyle:NSRoundedBezelStyle];
+    [denyButton setTitle:@"Don't Pair"];
+    [denyButton setTarget:self];
+    [denyButton setAction:@selector(denyPairing:)];
+    [denyButton setHidden:YES];
+    [v addSubview:denyButton];
+    pairButton = [[[NSButton alloc] initWithFrame:NSMakeRect(346, 14, 96, 32)] autorelease];
+    [pairButton setBezelStyle:NSRoundedBezelStyle];
+    [pairButton setTitle:@"Pair"];
+    [pairButton setKeyEquivalent:@"\r"];
+    [pairButton setTarget:self];
+    [pairButton setAction:@selector(acceptPairing:)];
+    [pairButton setHidden:YES];
+    [v addSubview:pairButton];
+
     pauseButton = [[[NSButton alloc] initWithFrame:NSMakeRect(346, 14, 96, 32)] autorelease];
     [pauseButton setBezelStyle:NSRoundedBezelStyle];
     [pauseButton setTitle:@"Pause"];
@@ -217,11 +241,19 @@ static void status_hook(int st, const char *text)
     case G4C_CONNECTED: [titleField setStringValue:@"Showing your Mac"];     break;
     case G4C_PAUSED:    [titleField setStringValue:@"Paused"];               break;
     case G4C_BONJOUR_STUCK: [titleField setStringValue:@"Bonjour isn't responding"]; break;
+    case G4C_PAIRING:   [titleField setStringValue:@"Pair with your Mac?"];  break;
     default:            [titleField setStringValue:@"Something's wrong"];    break;
     }
     [detailField setStringValue:[info objectForKey:@"text"]];
     [pauseButton setTitle:(state == G4C_PAUSED ? @"Resume" : @"Pause")];
     [bonjourButton setHidden:(state != G4C_BONJOUR_STUCK)];
+    [pairButton setHidden:(state != G4C_PAIRING)];
+    [denyButton setHidden:(state != G4C_PAIRING)];
+    [pauseButton setHidden:(state == G4C_PAIRING)];
+    if (state == G4C_PAIRING) {
+        [NSApp activateIgnoringOtherApps:YES];
+        [window makeKeyAndOrderFront:nil];
+    }
 
     /* coming back from full screen: bring the window forward */
     if (prev == G4C_CONNECTED && state != G4C_CONNECTED) {
@@ -272,6 +304,19 @@ static void status_hook(int st, const char *text)
     [as executeAndReturnError:&err];
     if (err) NSLog(@"PowerPC Display: Bonjour not restarted: %@", err);
     else [detailField setStringValue:@"Restarting Bonjour..."];
+}
+
+- (void)acceptPairing:(id)sender { g4c_pair_answer(1); [pairButton setHidden:YES]; [denyButton setHidden:YES]; }
+- (void)denyPairing:(id)sender  { g4c_pair_answer(0); [pairButton setHidden:YES]; [denyButton setHidden:YES]; }
+
+- (void)forgetPairings:(id)sender
+{
+    NSAlert *a = [[[NSAlert alloc] init] autorelease];
+    [a setMessageText:@"Forget all paired Macs?"];
+    [a setInformativeText:@"Every Mac will have to pair again (and show a code) the next time it connects."];
+    [a addButtonWithTitle:@"Forget"];
+    [a addButtonWithTitle:@"Cancel"];
+    if ([a runModal] == NSAlertFirstButtonReturn) g4c_forget_pairings();
 }
 
 - (void)changeDepth:(id)sender
@@ -337,10 +382,29 @@ static void status_hook(int st, const char *text)
 
 @end
 
+/* the engine reports to stderr; in the app keep it in
+   ~/Library/Logs/PowerPC Display.log (previous run kept as .old) */
+static void open_log_file(void)
+{
+    const char *home = getenv("HOME");
+    char path[1024], old[1100];
+    if (!home) return;
+    snprintf(path, sizeof path, "%s/Library/Logs/PowerPC Display.log", home);
+    snprintf(old, sizeof old, "%s.old", path);
+    rename(path, old);
+    if (freopen(path, "a", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
+    {
+        time_t t = time(NULL);
+        fprintf(stderr, "--- PowerPC Display started %s", ctime(&t));
+    }
+}
+
 int main(int argc, char **argv)
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-    NSApplication *app = [NSApplication sharedApplication];
+    NSApplication *app;
+    open_log_file();
+    app = [NSApplication sharedApplication];
     gDelegate = [[G4AppDelegate alloc] init];
     [app setDelegate:gDelegate];
     [app run];

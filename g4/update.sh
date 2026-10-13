@@ -34,7 +34,9 @@ echo "Getting the latest source from $M1..."
 
 for f in g4/client.c g4/app.m g4/g4client.h g4/AppIcon.icns "g4/Build PowerPC Display.command" \
          "g4/Build G4 Display.command" \
-         host/Sources/CCodec/g4codec.c host/Sources/CCodec/include/g4codec.h g4/update.sh; do
+         host/Sources/CCodec/g4codec.c host/Sources/CCodec/include/g4codec.h \
+         host/Sources/CCodec/g4auth.c host/Sources/CCodec/include/g4auth.h \
+         host/Sources/CCodec/g4nacl.c host/Sources/CCodec/g4nacl.h g4/update.sh; do
     out="../$f"
     [ "$f" = g4/update.sh ] && out="../$f.new"    # don't overwrite this script while it runs
     url=`echo "$f" | sed 's/ /%20/g'`

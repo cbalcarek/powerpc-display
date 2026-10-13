@@ -1,18 +1,21 @@
 import AppKit
 import CCodec
 
-/// Polls the mouse at ~125 Hz on the main thread and sends tiny position
-/// messages. The G4 draws the cursor itself, so it stays smooth even while a
-/// big screen update is still in flight. The cursor image is re-rendered only
-/// while the pointer is on the G4 display, and sent only when it changes.
+/// Follows the mouse and sends tiny position messages; the PowerPC Mac draws
+/// the cursor itself, so it stays smooth even while a big screen update is
+/// still in flight. Driven by mouse-move events (nothing runs while the mouse
+/// is still), plus a slow 10 Hz check for cursor-image changes without
+/// movement (e.g. I-beam → arrow). The image is re-rendered only while the
+/// pointer is on the PowerPC display, and sent only when it changes.
 final class CursorTracker {
     private var timer: DispatchSourceTimer?
+    private var monitors: [Any] = []
+    private var lastShapeCheck = 0.0
     private weak var host: Host?
     private var displayID: CGDirectDisplayID = 0
     private var scale: CGFloat = 1, offX: CGFloat = 0, offY: CGFloat = 0
     private var last = (x: Int.min, y: Int.min, vis: false)
     private var lastShapeHash: UInt64 = 0
-    private var tick = 0
 
     /// G4 pixel = offset + (point within the display) * scale
     func start(host: Host, displayID: CGDirectDisplayID, scale: CGFloat, offsetX: CGFloat, offsetY: CGFloat) {
@@ -24,8 +27,17 @@ final class CursorTracker {
         self.offY = offsetY
         last = (Int.min, Int.min, false)
         lastShapeHash = 0
+        // mouse movement anywhere (global) and over our own windows (local);
+        // mouse events don't need Accessibility permission
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        if let g = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in self?.poll() }) {
+            monitors.append(g)
+        }
+        if let l = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] e in self?.poll(); return e }) {
+            monitors.append(l)
+        }
         let t = DispatchSource.makeTimerSource(queue: .main)
-        t.schedule(deadline: .now(), repeating: .milliseconds(8), leeway: .milliseconds(1))
+        t.schedule(deadline: .now(), repeating: .milliseconds(100), leeway: .milliseconds(20))
         t.setEventHandler { [weak self] in self?.poll() }
         t.resume()
         timer = t
@@ -34,6 +46,8 @@ final class CursorTracker {
     func stop() {
         timer?.cancel()
         timer = nil
+        for m in monitors { NSEvent.removeMonitor(m) }
+        monitors.removeAll()
     }
 
     private func poll() {
@@ -51,8 +65,11 @@ final class CursorTracker {
             last = (x, y, vis)
         }
 
-        tick += 1
-        if vis && (tick % 6 == 0 || lastShapeHash == 0) { updateShape(host) }
+        let now = nowMs()
+        if vis && (now - lastShapeCheck >= 50 || lastShapeHash == 0) {
+            lastShapeCheck = now
+            updateShape(host)
+        }
     }
 
     private func updateShape(_ host: Host) {

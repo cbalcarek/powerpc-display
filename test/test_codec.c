@@ -336,6 +336,58 @@ static int one_yuv(int w, int h, int with_cache)
     return fails;
 }
 
+/* dirty-rect ingestion: only the rects that changed are converted and
+   compared; the client must still match the true screen exactly */
+static int run_rects(int depth, int yuv)
+{
+    g4_encoder *e = g4enc_create(W, H, depth), *ref = g4enc_create(W, H, depth);
+    int bpp = depth == 16 ? 2 : 4, i, k, fails = 0;
+    uint8_t *fb = (uint8_t *)calloc((size_t)W * H, bpp);
+    g4_decoder d;
+    uint32_t fid = 0, t = 1000;
+    double bytes = 0;
+    g4dec_init(&d, fb, W, H, depth);
+    g4dec_enable_cache(&d, 1024); g4enc_enable_cache(e, 1024);
+    g4enc_set_yuv(e, yuv);
+    for (i = 0; i < NLINES; i++) lineseed[i] = (uint32_t)i * 7919u + 17;
+    theme = 0; render(0);
+    g4enc_ingest_bgra(e, bgra, W * 4);                 /* first frame: everything */
+    for (i = 0; i < 160; i++) {
+        const uint8_t *msg; size_t n; g4_enc_stats st;
+        int nr = 1 + (int)(rnd() % 4);
+        if (i == 60) { render(3 * LINE_H); g4enc_ingest_bgra_rect(e, bgra, W * 4, 0, 0, W, H);   /* scroll (render repaints all) */
+                       g4enc_add_hint(e, WX, WY, WW, WH); }
+        for (k = 0; k < nr; k++) {
+            int rx = (int)(rnd() % (W - 40)), ry = (int)(rnd() % (H - 40));
+            int rw = 1 + (int)(rnd() % 300), rh = 1 + (int)(rnd() % 200);
+            if (i >= 100 && i < 130 && k == 0) { rx = 300; ry = 200; rw = 320; rh = 240; photo(rx, ry, rw, rh); }  /* video */
+            else {
+                int x, y, c = (int)(rnd() & 255);
+                if (rx + rw > W) rw = W - rx;
+                if (ry + rh > H) rh = H - ry;
+                for (y = ry; y < ry + rh; y++) for (x = rx; x < rx + rw; x++) if ((x ^ y) & 1) px(x, y, c, 255 - c, (c * 3) & 255);
+            }
+            g4enc_ingest_bgra_rect(e, bgra, W * 4, rx, ry, rw, rh);
+        }
+        if (i % 50 == 49) g4enc_ingest_bgra(e, bgra, W * 4);   /* periodic full check */
+        t += 33; g4enc_set_time(e, t);
+        n = g4enc_encode(e, ++fid, &msg, &st);
+        bytes += n;
+        if (n && g4dec_frame(&d, msg + G4_HDR_SIZE, n - G4_HDR_SIZE, NULL)) { printf("rects: decode error\n"); fails++; }
+        g4enc_ingest_bgra(ref, bgra, W * 4);
+        if (memcmp(g4enc_current(e), g4enc_current(ref), (size_t)W * H * bpp)) { printf("rects frame %d: current != screen\n", i); fails++; break; }
+        if (memcmp(fb, g4enc_model(e), (size_t)W * H * bpp)) { printf("rects frame %d: client != model\n", i); fails++; break; }
+    }
+    /* video stopped: refresh makes it exact */
+    { const uint8_t *msg; size_t n; g4_enc_stats st;
+      t += 500; g4enc_set_time(e, t); n = g4enc_encode(e, ++fid, &msg, &st);
+      if (n) g4dec_frame(&d, msg + G4_HDR_SIZE, n - G4_HDR_SIZE, NULL);
+      if (memcmp(fb, g4enc_current(ref), (size_t)W * H * bpp)) { printf("rects: not exact at the end\n"); fails++; } }
+    printf("dirty rects, depth %d%s: 160 frames, %.0f KB total, %s\n", depth, yuv ? " +video" : "", bytes / 1024, fails ? "FAILED" : "ok");
+    g4dec_free(&d); free(fb); g4enc_destroy(e); g4enc_destroy(ref);
+    return fails;
+}
+
 static int run_yuv(void)
 {
     int fails = 0, k;
@@ -354,8 +406,9 @@ static int run_yuv(void)
 int main(int argc, char **argv)
 {
     int fails = lz4_selftest();
-    if (argc > 1 && !strcmp(argv[1], "yuv")) {          /* just the video path */
+    if (argc > 1 && !strcmp(argv[1], "yuv")) {          /* just the video path + dirty rects */
         fails += run_yuv();
+        fails += run_rects(32, 0); fails += run_rects(32, 1); fails += run_rects(16, 0);
         printf(fails ? "\nFAILED (%d)\n" : "\nALL TESTS PASSED\n", fails);
         return fails != 0;
     }
@@ -363,6 +416,7 @@ int main(int argc, char **argv)
     fails += run(32, G4_DEFAULT_SLOTS);
     fails += run(16, G4_DEFAULT_SLOTS);
     fails += run_yuv();
+    fails += run_rects(32, 0); fails += run_rects(32, 1); fails += run_rects(16, 0);
     printf(fails ? "\nFAILED (%d)\n" : "\nALL TESTS PASSED\n", fails);
     return fails != 0;
 }

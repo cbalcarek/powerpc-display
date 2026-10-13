@@ -25,7 +25,7 @@ extern "C" {
 #endif
 
 #define G4_PORT            5960
-#define G4_PROTO_VERSION   1
+#define G4_PROTO_VERSION   2   /* 2: pairing (HELLO v2 + AUTH), PING liveness */
 #define G4_HDR_SIZE        8
 #define G4_MAX_PAYLOAD     (32u * 1024u * 1024u)
 
@@ -36,9 +36,25 @@ enum {
     G4_MSG_CURSOR_POS   = 3,  /* host -> client */
     G4_MSG_CURSOR_SHAPE = 4,  /* host -> client */
     G4_MSG_ACK          = 5,  /* client -> host: frame presented */
-    G4_MSG_PING         = 6,
-    G4_MSG_PONG         = 7
+    G4_MSG_PING         = 6,  /* host -> client, about once a second */
+    G4_MSG_PONG         = 7,
+    G4_MSG_AUTH         = 8,  /* host -> client, right after HELLO      */
+    G4_MSG_AUTH_OK      = 9,  /* client -> host                         */
+    G4_MSG_AUTH_FAIL    = 10  /* client -> host: u32 reason             */
 };
+
+/* AUTH_FAIL reasons */
+#define G4_AUTH_UNKNOWN_HOST  1   /* not paired with this host (or bad proof) */
+#define G4_AUTH_DECLINED      2   /* the user declined pairing on the PowerPC Mac */
+
+/* AUTH modes */
+#define G4_AUTH_KNOWN  1          /* + 32-byte host tag                     */
+#define G4_AUTH_PAIR   2          /* + 32-byte host public key (pairing)    */
+
+/* sizes of the v2 handshake messages' payloads */
+#define G4_HELLO_V2_LEN  80
+#define G4_AUTH_LEN      68
+#define G4_AUTH_OK_LEN   32
 
 /* rect kinds inside a FRAME */
 enum {
@@ -57,6 +73,7 @@ enum {
 
 /* HELLO flags (byte 11), set by the client */
 #define G4_HELLO_FLAG_YUV   0x01   /* client can decode G4_RECT_YUV */
+#define G4_HELLO_FLAG_AUTH  0x02   /* HELLO v2: client id, nonce and key follow; AUTH required */
 
 /* tile cache: 32x32 tiles the client keeps so content it has seen before
    (menus closing, switching apps back, caret blink) costs 12 bytes */
@@ -70,6 +87,12 @@ enum {
  * HELLO   : 'G','4','D','P', u16 version, u16 width, u16 height,
  *           u8 depth (16|32), u8 flags, u16 cache slots,
  *           u16 physical width in mm (0 = unknown)              (16 bytes)
+ *           v2 (flag AUTH): + client id[16], client nonce[16],
+ *           client X25519 public key[32] (used only when pairing) (80 bytes)
+ * AUTH    : u8 mode, u8 0, u16 0, host id[16], host nonce[16],
+ *           mode KNOWN: host tag[32]; mode PAIR: host public key[32]  (68 bytes)
+ * AUTH_OK : client tag[32]. The host sends nothing else (no FRAME) before it
+ *           has verified AUTH_OK; the client accepts nothing else before AUTH.
  * FRAME   : u32 frame_id, u16 nrects, u16 0, then rects:
  *           u8 kind, u8 0, u16 x, u16 y, u16 w, u16 h, <kind data>
  *           Rects are applied in order (COPYs always come first).
@@ -133,6 +156,12 @@ int         g4enc_refresh_due(const g4_encoder *e, uint32_t now_ms);
 int         g4enc_enable_cache(g4_encoder *e, int slots);
 /* convert a BGRA8888 frame (ScreenCaptureKit layout) into the current frame */
 void        g4enc_ingest_bgra(g4_encoder *e, const uint8_t *src, size_t stride);
+/* convert only one changed rectangle of the frame at src (same layout as
+   above, full-frame pointer). The next encode then compares only the tiles
+   touched by ingested rects (plus video tiles due a refresh) instead of the
+   whole screen. Call g4enc_ingest_bgra now and then as a safety net. */
+void        g4enc_ingest_bgra_rect(g4_encoder *e, const uint8_t *src, size_t stride,
+                                   int x, int y, int w, int h);
 /* dirty-rect hint (pixels) used for scroll detection; accumulates until encode */
 void        g4enc_add_hint(g4_encoder *e, int x, int y, int w, int h);
 /*

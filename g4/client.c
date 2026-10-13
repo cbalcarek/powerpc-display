@@ -30,6 +30,7 @@
  *                       -t: test mode without drawing, for emulators)
  */
 #include "g4codec.h"
+#include "g4auth.h"
 #include "g4client.h"
 
 #include <OpenGL/OpenGL.h>
@@ -53,6 +54,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -63,6 +65,7 @@ static int  opt_slots   = -1;   /* -1 = automatic (from RAM) */
 static int  opt_test    = 0;   /* -t: no OpenGL, decode only, save PNG snapshots */
 static volatile int quit_requested = 0;
 static int app_mode = 0;   /* set by the Tiger app (app.m) */
+static volatile int g_paused = 0;
 static void report(int state, const char *text);
 
 /* ------------------------------------------------------------------ */
@@ -251,6 +254,12 @@ typedef struct {
     unsigned stat_frames, stat_draws;
     double stat_bytes, stat_decode_ms;
     double stat_wait_ms, stat_upload_ms, stat_flush_ms, stat_upload_kb;
+
+    /* liveness: once the other Mac has sent a PING it pings every second;
+       if it goes quiet (cable pulled, Mac asleep or crashed) give the
+       screen back instead of freezing on the last picture */
+    double last_rx;
+    int got_ping;
 } session;
 
 /* Call fn for each run of consecutive changed bands (rows y0..y1). Only the
@@ -626,6 +635,7 @@ static int handle_message(session *s, int *need_draw, uint32_t *frame_to_ack)
     }
     if (len && read_full(s->fd, s->msg, len)) return -1;
     s->stat_bytes += len + G4_HDR_SIZE;
+    s->last_rx = now_ms();
 
     switch (type) {
     case G4_MSG_FRAME: {
@@ -656,6 +666,7 @@ static int handle_message(session *s, int *need_draw, uint32_t *frame_to_ack)
         *need_draw = 1;
         break;
     case G4_MSG_PING:
+        s->got_ping = 1;
         if (len >= 4 && send_u32_msg(s->fd, G4_MSG_PONG, g4_get32(s->msg))) return -1;
         break;
     default:
@@ -664,11 +675,219 @@ static int handle_message(session *s, int *need_draw, uint32_t *frame_to_ack)
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* pairing: which Apple Silicon Macs may use this display              */
+
+#define MAX_PAIRS 16
+static uint8_t my_id[G4_ID_BYTES];
+static int     my_id_ok = 0;
+static struct { uint8_t host[G4_ID_BYTES]; uint8_t key[G4_KEY_BYTES]; } pairs[MAX_PAIRS];
+static int     npairs = 0;
+static volatile int pair_answer = -1;     /* while pairing: -1 waiting, 0 no, 1 yes */
+
+/* ~/Library/Application Support/PowerPC Display/pairing (mode 600) */
+static const char *pairing_path(int create_dir)
+{
+    static char path[1100];
+    const char *home = getenv("HOME");
+    char dir[1024];
+    if (!home) home = "/tmp";
+    if (create_dir) {                      /* make each level; existing ones are fine */
+        snprintf(dir, sizeof dir, "%s/Library", home); mkdir(dir, 0700);
+        snprintf(dir, sizeof dir, "%s/Library/Application Support", home); mkdir(dir, 0700);
+    }
+    snprintf(dir, sizeof dir, "%s/Library/Application Support/PowerPC Display", home);
+    if (create_dir) mkdir(dir, 0700);
+    snprintf(path, sizeof path, "%s/pairing", dir);
+    return path;
+}
+
+static void pairing_save(void)
+{
+    char tmp[1100], hx[2 * G4_KEY_BYTES + 1], hh[2 * G4_ID_BYTES + 1];
+    const char *path = pairing_path(1);
+    FILE *f;
+    int i;
+    snprintf(tmp, sizeof tmp, "%s.new", path);
+    f = fopen(tmp, "w");
+    if (!f) { fprintf(stderr, "can't save pairing (%s)\n", tmp); return; }
+    fchmod(fileno(f), 0600);
+    g4_hex(my_id, G4_ID_BYTES, hh);
+    fprintf(f, "id %s\n", hh);
+    for (i = 0; i < npairs; i++) {
+        g4_hex(pairs[i].host, G4_ID_BYTES, hh);
+        g4_hex(pairs[i].key, G4_KEY_BYTES, hx);
+        fprintf(f, "host %s %s\n", hh, hx);
+    }
+    fclose(f);
+    rename(tmp, path);
+}
+
+static void pairing_load(void)
+{
+    FILE *f = fopen(pairing_path(0), "r");
+    char line[256];
+    npairs = 0;
+    if (f) {
+        while (fgets(line, sizeof line, f)) {
+            char a[80], b[80];
+            if (sscanf(line, "id %64s", a) == 1 && strlen(a) == 2 * G4_ID_BYTES && !g4_unhex(a, my_id, G4_ID_BYTES))
+                my_id_ok = 1;
+            else if (npairs < MAX_PAIRS && sscanf(line, "host %64s %70s", a, b) == 2 &&
+                     strlen(a) == 2 * G4_ID_BYTES && strlen(b) == 2 * G4_KEY_BYTES &&
+                     !g4_unhex(a, pairs[npairs].host, G4_ID_BYTES) && !g4_unhex(b, pairs[npairs].key, G4_KEY_BYTES))
+                npairs++;
+        }
+        fclose(f);
+    }
+    if (!my_id_ok && !g4_random(my_id, G4_ID_BYTES)) { my_id_ok = 1; pairing_save(); }
+}
+
+static int pairing_find(const uint8_t *host)
+{
+    int i;
+    for (i = 0; i < npairs; i++) if (!memcmp(pairs[i].host, host, G4_ID_BYTES)) return i;
+    return -1;
+}
+
+static void pairing_store(const uint8_t *host, const uint8_t *key)
+{
+    int i = pairing_find(host);
+    if (i < 0) {
+        if (npairs == MAX_PAIRS) { memmove(&pairs[0], &pairs[1], sizeof pairs[0] * (MAX_PAIRS - 1)); npairs--; }
+        i = npairs++;
+    }
+    memcpy(pairs[i].host, host, G4_ID_BYTES);
+    memcpy(pairs[i].key, key, G4_KEY_BYTES);
+    pairing_save();
+}
+
+void g4c_forget_pairings(void) { pairing_load(); npairs = 0; pairing_save(); }
+int  g4c_paired_count(void) { pairing_load(); return npairs; }
+void g4c_pair_answer(int yes) { pair_answer = yes ? 1 : 0; }
+
+/* read one small message, waiting at most timeout_ms. 0 = ok */
+static int read_msg_timeout(int fd, int *type, uint8_t *buf, size_t cap, uint32_t *len, int timeout_ms)
+{
+    uint8_t hdr[G4_HDR_SIZE];
+    fd_set rf;
+    struct timeval tv;
+    FD_ZERO(&rf); FD_SET(fd, &rf);
+    tv.tv_sec = timeout_ms / 1000; tv.tv_usec = (timeout_ms % 1000) * 1000;
+    if (select(fd + 1, &rf, NULL, NULL, &tv) <= 0) return -1;
+    if (read_full(fd, hdr, sizeof hdr)) return -1;
+    *type = hdr[0];
+    *len = g4_get32(hdr + 4);
+    if (*len > cap) return -1;
+    return *len ? read_full(fd, buf, *len) : 0;
+}
+
+static int send_msg(int fd, int type, const uint8_t *payload, uint32_t len)
+{
+    uint8_t m[G4_HDR_SIZE + 64];
+    if (len > 64) return -1;
+    g4_put_header(m, type, len);
+    if (len) memcpy(m + G4_HDR_SIZE, payload, len);
+    return write_full(fd, m, G4_HDR_SIZE + len);
+}
+
+/* is the other end still there? (used while waiting for the user) */
+static int peer_closed(int fd)
+{
+    fd_set rf;
+    struct timeval tv = { 0, 0 };
+    char c;
+    FD_ZERO(&rf); FD_SET(fd, &rf);
+    if (select(fd + 1, &rf, NULL, NULL, &tv) <= 0) return 0;
+    return recv(fd, &c, 1, MSG_PEEK) <= 0;
+}
+
+/* ask the person at this Mac to compare the code; 1 = yes */
+static int confirm_pairing(int fd, unsigned code)
+{
+    char msg[300];
+    double deadline = now_ms() + 120000;
+    snprintf(msg, sizeof msg,
+             "Your Mac wants to use this Mac as a display. Pair only if your Mac shows the same code: %03u %03u",
+             code / 1000, code % 1000);
+    pair_answer = -1;
+    report(G4C_PAIRING, msg);
+    if (!app_mode) {
+        /* command line: answer on stdin */
+        if (!isatty(0)) { fprintf(stderr, "not pairing: no one to ask (run in Terminal)\n"); return 0; }
+        fprintf(stderr, "Pair with this Mac? Type y and Return: ");
+        while (now_ms() < deadline && !quit_requested) {
+            fd_set rf;
+            struct timeval tv = { 0, 300000 };
+            FD_ZERO(&rf); FD_SET(0, &rf);
+            if (select(1, &rf, NULL, NULL, &tv) > 0) {
+                char line[32];
+                if (!fgets(line, sizeof line, stdin)) return 0;
+                return line[0] == 'y' || line[0] == 'Y';
+            }
+            if (peer_closed(fd)) return 0;
+        }
+        return 0;
+    }
+    while (pair_answer < 0 && now_ms() < deadline && !quit_requested && !g_paused) {
+        if (peer_closed(fd)) { report(G4C_WAITING, "Pairing cancelled on your Mac."); return 0; }
+        usleep(100000);
+    }
+    return pair_answer == 1;
+}
+
+/* After HELLO: the other Mac must prove it's paired with us (or pair now).
+   Nothing else is accepted before this succeeds. 0 = ok */
+static int authenticate(int fd, const uint8_t *nc, const uint8_t *cpub, const uint8_t *cpriv)
+{
+    uint8_t p[128], key[G4_KEY_BYTES], tag[G4_TAG_BYTES], why[4];
+    const uint8_t *hid, *nh, *rest;
+    uint32_t len;
+    int type, mode, i;
+
+    if (read_msg_timeout(fd, &type, p, sizeof p, &len, 15000) || type != G4_MSG_AUTH || len < G4_AUTH_LEN) {
+        fprintf(stderr, "the other Mac didn't authenticate (an older version of PowerPC Display?)\n");
+        return -1;
+    }
+    mode = p[0]; hid = p + 4; nh = p + 20; rest = p + 36;
+
+    if (mode == G4_AUTH_KNOWN) {
+        i = pairing_find(hid);
+        if (i >= 0) g4_auth_tag(tag, pairs[i].key, 'H', my_id, hid, nc, nh);
+        if (i < 0 || !g4_equal(tag, rest, G4_TAG_BYTES)) {
+            g4_put32(why, G4_AUTH_UNKNOWN_HOST);
+            send_msg(fd, G4_MSG_AUTH_FAIL, why, 4);
+            report(G4C_ERROR, "A Mac that isn't paired with this one tried to connect. It will ask to pair.");
+            return -1;
+        }
+        g4_auth_tag(tag, pairs[i].key, 'C', my_id, hid, nc, nh);
+        return send_msg(fd, G4_MSG_AUTH_OK, tag, G4_TAG_BYTES);
+    }
+    if (mode == G4_AUTH_PAIR) {
+        if (g4_pair_key(key, cpriv, rest, cpub, rest, my_id, hid)) return -1;
+        if (!confirm_pairing(fd, g4_pair_code(key))) {
+            g4_put32(why, G4_AUTH_DECLINED);
+            send_msg(fd, G4_MSG_AUTH_FAIL, why, 4);
+            report(G4C_WAITING, "Not paired.");
+            memset(key, 0, sizeof key);
+            return -1;
+        }
+        pairing_store(hid, key);
+        g4_auth_tag(tag, key, 'C', my_id, hid, nc, nh);
+        memset(key, 0, sizeof key);
+        fprintf(stderr, "paired with a new Mac\n");
+        return send_msg(fd, G4_MSG_AUTH_OK, tag, G4_TAG_BYTES);
+    }
+    return -1;
+}
+
 static void run_session(int fd)
 {
     session s;
-    uint8_t hello[G4_HDR_SIZE + 16];
+    uint8_t hello[G4_HDR_SIZE + G4_HELLO_V2_LEN];
+    uint8_t nonce[G4_NONCE_BYTES], cpub[G4_PUB_BYTES], cpriv[G4_PUB_BYTES];
     int one = 1, buf = 1 << 20;
+    struct timeval sndto = { 3, 0 };
     double last_keys = 0, last_awake = 0;
 
     memset(&s, 0, sizeof s);
@@ -683,8 +902,15 @@ static void run_session(int fd)
 
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof buf);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sndto, sizeof sndto);   /* never block forever on a dead link */
 
-    g4_put_header(hello, G4_MSG_HELLO, 16);
+    pairing_load();
+    if (!my_id_ok || g4_random(nonce, sizeof nonce) || g4_dh_keypair(cpub, cpriv)) {
+        report(G4C_ERROR, "Can't read random numbers (/dev/urandom); can't pair securely.");
+        return;
+    }
+
+    g4_put_header(hello, G4_MSG_HELLO, G4_HELLO_V2_LEN);
     memcpy(hello + G4_HDR_SIZE, "G4DP", 4);
     g4_put16(hello + G4_HDR_SIZE + 4, G4_PROTO_VERSION);
     g4_put16(hello + G4_HDR_SIZE + 6, (uint32_t)s.W);
@@ -692,7 +918,10 @@ static void run_session(int fd)
     hello[G4_HDR_SIZE + 10] = (uint8_t)s.depth;
     /* 4:2:2 video regions: decoded on the CPU into the normal framebuffer,
        so every drawing path supports them (32-bit only) */
-    hello[G4_HDR_SIZE + 11] = s.depth == 32 ? G4_HELLO_FLAG_YUV : 0;
+    hello[G4_HDR_SIZE + 11] = (uint8_t)((s.depth == 32 ? G4_HELLO_FLAG_YUV : 0) | G4_HELLO_FLAG_AUTH);
+    memcpy(hello + G4_HDR_SIZE + 16, my_id, G4_ID_BYTES);
+    memcpy(hello + G4_HDR_SIZE + 32, nonce, G4_NONCE_BYTES);
+    memcpy(hello + G4_HDR_SIZE + 48, cpub, G4_PUB_BYTES);
 
     s.fb = (uint8_t *)valloc(s.fbsize);                       /* page aligned for DMA */
     if (!s.fb) return;
@@ -710,7 +939,12 @@ static void run_session(int fd)
         unsigned wmm = (mm.width > 0 && mm.width < 65535) ? (unsigned)(mm.width + 0.5) : 0;
         g4_put16(hello + G4_HDR_SIZE + 14, wmm);
     }
-    if (write_full(fd, hello, sizeof hello)) { g4dec_free(&s.dec); free(s.fb); return; }
+    if (write_full(fd, hello, sizeof hello) || authenticate(fd, nonce, cpub, cpriv)) {
+        memset(cpriv, 0, sizeof cpriv);
+        g4dec_free(&s.dec); free(s.fb);
+        return;
+    }
+    memset(cpriv, 0, sizeof cpriv);
 
     {
         char msg[256];
@@ -724,6 +958,7 @@ static void run_session(int fd)
         uint32_t ack = 0;
         double last_snap = now_ms();
         s.stat_t0 = now_ms();
+        s.last_rx = now_ms();
 
         for (;;) {
             fd_set rf;
@@ -746,6 +981,10 @@ static void run_session(int fd)
                 if (now_ms() - burst_start > 10.0) break;
             }
             if (!alive) break;
+            if (s.got_ping && now_ms() - s.last_rx > 4000) {
+                report(G4C_WAITING, "Your Mac stopped responding (cable unplugged, or it's asleep).");
+                break;
+            }
 
             /* take over the screen only once there is a picture to show, so a
                connection that fails early never blanks the G4 */
@@ -835,7 +1074,6 @@ static void run_session(int fd)
 /* server loop: listen, advertise on Bonjour, run one session at a time */
 
 static g4c_status_fn status_hook = NULL;
-static volatile int g_paused = 0;
 static int lfd = -1;
 static DNSServiceRef bonjour = NULL;
 static char bonjour_name[256];

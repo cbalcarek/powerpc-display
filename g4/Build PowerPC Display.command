@@ -58,15 +58,18 @@ build_slice() {
     A="$1"; F=`flags_for "$1"`
     gcc -arch $A -std=gnu99 $COMMON $F -DG4_APP -c -o "$TMP/client-$A.o" client.c &&
     gcc -arch $A -std=gnu99 $COMMON $F -c -o "$TMP/codec-$A.o" "$CODEC/g4codec.c" &&
+    gcc -arch $A -std=gnu99 $COMMON $F -c -o "$TMP/auth-$A.o" "$CODEC/g4auth.c" &&
+    gcc -arch $A -std=gnu99 $COMMON $F -w -c -o "$TMP/nacl-$A.o" "$CODEC/g4nacl.c" &&
     gcc -arch $A $COMMON $F -c -o "$TMP/app-$A.o" app.m &&
-    gcc -arch $A -o "$2" "$TMP/app-$A.o" "$TMP/client-$A.o" "$TMP/codec-$A.o" $LIBS -framework Cocoa
+    gcc -arch $A -o "$2" "$TMP/app-$A.o" "$TMP/client-$A.o" "$TMP/codec-$A.o" "$TMP/auth-$A.o" "$TMP/nacl-$A.o" \
+        $LIBS -framework Cocoa
 }
 
 echo "Building the command-line ppcdisplay (for this Mac)..."
 case "$THIS_CPU" in ppc750|ppc7400|ppc7450|ppc970) CLI_ARCH=$THIS_CPU ;; *) CLI_ARCH=ppc ;; esac
-gcc -arch $CLI_ARCH -std=gnu99 $COMMON `flags_for $CLI_ARCH` -o ppcdisplay client.c "$CODEC/g4codec.c" $LIBS || {
+gcc -arch $CLI_ARCH -std=gnu99 $COMMON `flags_for $CLI_ARCH` -o ppcdisplay client.c "$CODEC/g4codec.c" "$CODEC/g4auth.c" "$CODEC/g4nacl.c" $LIBS || {
     echo "Retrying the command-line tool without the CPU-specific setting..."
-    gcc -std=gnu99 $COMMON `flags_for ppc` -o ppcdisplay client.c "$CODEC/g4codec.c" $LIBS || exit 1
+    gcc -std=gnu99 $COMMON `flags_for ppc` -o ppcdisplay client.c "$CODEC/g4codec.c" "$CODEC/g4auth.c" "$CODEC/g4nacl.c" $LIBS || exit 1
 }
 
 APP="PowerPC Display.app"
@@ -102,8 +105,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key>           <string>AppIcon</string>
     <key>CFBundlePackageType</key>        <string>APPL</string>
     <key>CFBundleSignature</key>          <string>????</string>
-    <key>CFBundleShortVersionString</key> <string>0.7.1</string>
-    <key>CFBundleVersion</key>            <string>8</string>
+    <key>CFBundleShortVersionString</key> <string>0.8</string>
+    <key>CFBundleVersion</key>            <string>9</string>
     <key>NSPrincipalClass</key>           <string>NSApplication</string>
     <key>LSMinimumSystemVersion</key>     <string>10.4</string>
 </dict>

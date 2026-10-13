@@ -241,6 +241,10 @@ struct g4_encoder {
     uint32_t *llast;
     uint8_t  *refresh;     /* per tile: changed only because it's due a lossless refresh */
     uint8_t  *vmask;
+
+    /* which tiles to compare on the next encode (dirty-rect ingestion) */
+    uint8_t  *dmask;
+    int       all_dirty;
 };
 
 #define YUV_FAST_MS     250   /* changed again this soon: treat as video   */
@@ -301,11 +305,13 @@ g4_encoder *g4enc_create(int width, int height, int depth)
         e->llast = (uint32_t *)calloc(nt, sizeof(uint32_t));
         e->refresh = (uint8_t *)calloc(nt, 1);
         e->vmask = (uint8_t *)calloc(nt, 1);
+        e->dmask = (uint8_t *)calloc(nt, 1);
     }
+    e->all_dirty = 1;
 
     if (!e->cur || !e->model || !e->tiles || !e->rects || !e->hc || !e->hm ||
         !e->uc || !e->um || !e->votes || !e->tkey || !e->tval || !e->tlast || !e->tvol ||
-        !e->tfast || !e->lossy || !e->lhash || !e->llast || !e->refresh || !e->vmask) {
+        !e->tfast || !e->lossy || !e->lhash || !e->llast || !e->refresh || !e->vmask || !e->dmask) {
         g4enc_destroy(e);
         return NULL;
     }
@@ -322,7 +328,7 @@ void g4enc_destroy(g4_encoder *e)
     free(e->tkey); free(e->tval);
     free(e->cpx); free(e->chash); free(e->cvalid); free(e->cref); free(e->ctab);
     free(e->thash); free(e->tstate); free(e->tlast); free(e->tvol);
-    free(e->tfast); free(e->lossy); free(e->lhash); free(e->llast); free(e->refresh); free(e->vmask);
+    free(e->tfast); free(e->lossy); free(e->lhash); free(e->llast); free(e->refresh); free(e->vmask); free(e->dmask);
     free(e);
 }
 
@@ -391,22 +397,41 @@ int g4enc_enable_cache(g4_encoder *e, int slots)
 const uint8_t *g4enc_current(const g4_encoder *e) { return e->cur; }
 const uint8_t *g4enc_model(const g4_encoder *e) { return e->model; }
 
-void g4enc_ingest_bgra(g4_encoder *e, const uint8_t *src, size_t sstride)
+static void ingest_rows(g4_encoder *e, const uint8_t *src, size_t sstride, int x0, int y0, int w, int h)
 {
     int y, x;
-    for (y = 0; y < e->h; y++) {
-        const uint8_t *s = src + (size_t)y * sstride;
-        uint8_t *d = e->cur + (size_t)y * e->stride;
+    for (y = y0; y < y0 + h; y++) {
+        const uint8_t *s = src + (size_t)y * sstride + (size_t)x0 * 4;
+        uint8_t *d = e->cur + (size_t)y * e->stride + (size_t)x0 * e->bpp;
         if (e->depth == 32) {
-            g4_bgra_to_wire32(s, d, (size_t)e->w);
+            g4_bgra_to_wire32(s, d, (size_t)w);
         } else {
-            for (x = 0; x < e->w; x++, s += 4, d += 2) {
+            for (x = 0; x < w; x++, s += 4, d += 2) {
                 uint32_t v = 0x8000u | ((uint32_t)(s[2] >> 3) << 10) |
                              ((uint32_t)(s[1] >> 3) << 5) | (uint32_t)(s[0] >> 3);
                 d[0] = (uint8_t)(v >> 8); d[1] = (uint8_t)v;
             }
         }
     }
+}
+
+void g4enc_ingest_bgra(g4_encoder *e, const uint8_t *src, size_t sstride)
+{
+    ingest_rows(e, src, sstride, 0, 0, e->w, e->h);
+    e->all_dirty = 1;
+}
+
+void g4enc_ingest_bgra_rect(g4_encoder *e, const uint8_t *src, size_t sstride, int x, int y, int w, int h)
+{
+    int tx, ty;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > e->w) w = e->w - x;
+    if (y + h > e->h) h = e->h - y;
+    if (w <= 0 || h <= 0) return;
+    ingest_rows(e, src, sstride, x, y, w, h);
+    for (ty = y / TILE; ty * TILE < y + h; ty++)
+        for (tx = x / TILE; tx * TILE < x + w; tx++) e->dmask[ty * e->tw + tx] = 1;
 }
 
 void g4enc_add_hint(g4_encoder *e, int x, int y, int w, int h)
@@ -573,6 +598,10 @@ static int diff_tiles(g4_encoder *e)
             int i = ty * e->tw + tx;
             uint8_t ch = 0;
             e->refresh[i] = 0;
+            if (!e->all_dirty && !e->dmask[i] && !e->lossy[i]) {   /* nothing ingested here */
+                e->tiles[i] = 0;
+                continue;
+            }
             if (e->lossy[i]) {
                 /* the client shows a 4:2:2 version of this tile: it only
                    counts as changed if the source changed, or once it has
@@ -949,6 +978,9 @@ size_t g4enc_encode(g4_encoder *e, uint32_t frame_id, const uint8_t **out, g4_en
         }
     }
     e->nhints = 0;
+    /* everything ingested so far has now been compared */
+    memset(e->dmask, 0, (size_t)e->tw * e->th);
+    e->all_dirty = 0;
     track_video(e);
 
     {

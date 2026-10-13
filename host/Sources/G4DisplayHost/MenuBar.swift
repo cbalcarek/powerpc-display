@@ -67,6 +67,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(fpsItem)
 
         menu.addItem(.separator())
+        menu.addItem(action("Forget Paired PowerPC Macs…", #selector(forgetPairings)))
         menu.addItem(action("Quit PowerPC Display", #selector(quit), key: "q"))
     }
 
@@ -89,5 +90,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func setExtend() { controller.setMirror(false) }
     @objc private func setMirror() { controller.setMirror(true) }
     @objc private func toggleSmooth() { controller.setSmoothVideo(!model.smoothVideo) }
+    @objc private func forgetPairings() { controller.forgetPairings() }
     @objc private func quit() { NSApp.terminate(nil) }
 }

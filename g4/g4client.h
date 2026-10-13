@@ -8,7 +8,8 @@ enum {
     G4C_CONNECTED = 1,   /* showing the M1's screen            */
     G4C_PAUSED    = 2,   /* not listening (user paused)        */
     G4C_ERROR     = 3,
-    G4C_BONJOUR_STUCK = 4  /* listening, but Bonjour isn't answering for us */
+    G4C_BONJOUR_STUCK = 4, /* listening, but Bonjour isn't answering for us */
+    G4C_PAIRING   = 5      /* a new Mac wants to pair: show the code, ask */
 };
 
 typedef void (*g4c_status_fn)(int state, const char *text);
@@ -23,5 +24,8 @@ void g4c_set_app_mode(int on);                /* Cmd+Esc pauses instead of quitt
 int  g4c_server_run(void);                    /* blocks until g4c_stop() */
 void g4c_stop(void);
 int  g4c_bonjour_stuck(void);
+void g4c_pair_answer(int yes);                /* answer to G4C_PAIRING */
+void g4c_forget_pairings(void);               /* every Mac must pair again */
+int  g4c_paired_count(void);
 
 #endif
