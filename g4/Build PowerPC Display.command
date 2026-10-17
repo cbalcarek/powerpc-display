@@ -58,32 +58,30 @@ vec_for() {
     case "$1" in ppc7400|ppc7450|ppc970) echo "-maltivec -mabi=altivec" ;; *) echo "" ;; esac
 }
 
+# the pairing code (only runs while connecting) is built once, for any PowerPC
+echo "Building the pairing code (step 1 of 5)..."
+gcc -arch ppc -std=gnu99 $COMMON -O2 -c -o "$TMP/auth.o" "$CODEC/g4auth.c" &&
+gcc -arch ppc -std=gnu99 $COMMON -O2 -w -c -o "$TMP/nacl.o" "$CODEC/g4nacl.c" || { rm -rf "$TMP"; exit 1; }
+
 # build one CPU-specific copy of the app's program. $1 = arch, $2 = output
 build_slice() {
     A="$1"; F=`flags_for "$1"`; V=`vec_for "$1"`
     gcc -arch $A -std=gnu99 $COMMON $F -DG4_APP -c -o "$TMP/client-$A.o" client.c &&
     { gcc -arch $A -std=gnu99 $COMMON $F $V -c -o "$TMP/codec-$A.o" "$CODEC/g4codec.c" ||
       gcc -arch $A -std=gnu99 $COMMON $F -c -o "$TMP/codec-$A.o" "$CODEC/g4codec.c"; } &&
-    gcc -arch $A -std=gnu99 $COMMON $F -c -o "$TMP/auth-$A.o" "$CODEC/g4auth.c" &&
-    gcc -arch $A -std=gnu99 $COMMON $F -w -c -o "$TMP/nacl-$A.o" "$CODEC/g4nacl.c" &&
     gcc -arch $A $COMMON $F -c -o "$TMP/app-$A.o" app.m &&
-    gcc -arch $A -o "$2" "$TMP/app-$A.o" "$TMP/client-$A.o" "$TMP/codec-$A.o" "$TMP/auth-$A.o" "$TMP/nacl-$A.o" \
+    gcc -arch $A -o "$2" "$TMP/app-$A.o" "$TMP/client-$A.o" "$TMP/codec-$A.o" "$TMP/auth.o" "$TMP/nacl.o" \
         $LIBS -framework Cocoa
-}
-
-echo "Building the command-line ppcdisplay (for this Mac)..."
-case "$THIS_CPU" in ppc750|ppc7400|ppc7450|ppc970) CLI_ARCH=$THIS_CPU ;; *) CLI_ARCH=ppc ;; esac
-gcc -arch $CLI_ARCH -std=gnu99 $COMMON `flags_for $CLI_ARCH` `vec_for $CLI_ARCH` -o ppcdisplay client.c "$CODEC/g4codec.c" "$CODEC/g4auth.c" "$CODEC/g4nacl.c" $LIBS || {
-    echo "Retrying the command-line tool without the CPU-specific setting..."
-    gcc -std=gnu99 $COMMON `flags_for ppc` -o ppcdisplay client.c "$CODEC/g4codec.c" "$CODEC/g4auth.c" "$CODEC/g4nacl.c" $LIBS || exit 1
 }
 
 APP="PowerPC Display.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 SLICES=""
+STEP=2
 for A in ppc750 ppc7400 ppc7450 ppc970; do
-    echo "Building PowerPC Display.app for $A..."
+    echo "Building PowerPC Display.app for $A (step $STEP of 5; each takes a few minutes in a VM)..."
+    STEP=`expr $STEP + 1`
     if build_slice $A "$TMP/PowerPCDisplay-$A" 2>"$TMP/err-$A.txt"; then
         SLICES="$SLICES $TMP/PowerPCDisplay-$A"
     else
@@ -163,3 +161,15 @@ else
     echo "Couldn't copy it into Applications; opening it from here instead."
     open "$APP"
 fi
+
+# the command-line ppcdisplay (debugging, -t test mode): last, so the app is
+# ready first. Skip it with: NO_CLI=1 "./Build PowerPC Display.command"
+if [ -z "$NO_CLI" ]; then
+    echo
+    echo "Also building the command-line ppcdisplay for this Mac (optional; you can close this window)..."
+    case "$THIS_CPU" in ppc750|ppc7400|ppc7450|ppc970) CLI_ARCH=$THIS_CPU ;; *) CLI_ARCH=ppc ;; esac
+    gcc -arch $CLI_ARCH -std=gnu99 $COMMON `flags_for $CLI_ARCH` `vec_for $CLI_ARCH` -o ppcdisplay client.c "$CODEC/g4codec.c" "$CODEC/g4auth.c" "$CODEC/g4nacl.c" $LIBS 2>/dev/null ||
+    gcc -std=gnu99 $COMMON `flags_for ppc` -o ppcdisplay client.c "$CODEC/g4codec.c" "$CODEC/g4auth.c" "$CODEC/g4nacl.c" $LIBS 2>/dev/null &&
+    echo "Built: `pwd`/ppcdisplay"
+fi
+echo "Done."
