@@ -11,8 +11,12 @@ ARCH    = $(if $(filter ppc750,$(CPU)),-mcpu=750 -mtune=750,\
 CFLAGS  = -O3 $(ARCH) -fomit-frame-pointer -std=gnu99 -Wall -I$(CODEC)/include
 LIBS    = -framework OpenGL -framework ApplicationServices -framework Carbon
 
-ppcdisplay: client.c $(CODEC)/g4codec.c $(CODEC)/include/g4codec.h
-	$(CC) $(CFLAGS) -o $@ client.c $(CODEC)/g4codec.c $(LIBS)
+SRCS    = client.c $(CODEC)/g4codec.c $(CODEC)/g4auth.c $(CODEC)/g4nacl.c
+
+# plain C (no AltiVec): Tiger's gcc 4.0 can run out of memory on the AltiVec
+# file, so "Build PowerPC Display.command" tries that part separately
+ppcdisplay: $(SRCS) $(CODEC)/include/g4codec.h
+	$(CC) $(CFLAGS) -mno-altivec -o $@ $(SRCS) $(LIBS)
 
 clean:
 	rm -f ppcdisplay

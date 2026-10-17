@@ -10,11 +10,7 @@ int main(void)
     static uint8_t in[64 + 16], out[128 + 16], ref[128 + 16];
     unsigned cb, cr, y, i, w, off, bad = 0;
     uint32_t r = 1;
-#ifdef __ALTIVEC__
-    puts("AltiVec path enabled");
-#else
-    puts("scalar path (no AltiVec in this build)");
-#endif
+    puts(g4_yuv_simd_available() ? "AltiVec path enabled" : "scalar path (no AltiVec in this build)");
     for (cb = 0; cb < 256; cb++)
         for (cr = 0; cr < 256; cr++)
             for (y = 0; y < 256; y += 4) {             /* 4 pairs per call: Y0 = y..y+3 */

@@ -14,13 +14,13 @@ test_auth: test_auth.c $(CODEC)/g4auth.c $(CODEC)/g4nacl.c $(CODEC)/include/g4au
 	$(CC) -O1 -g -std=c99 -D_DEFAULT_SOURCE -Wall -fsanitize=address,undefined -I$(CODEC)/include \
 		-o $@ test_auth.c $(CODEC)/g4auth.c $(CODEC)/g4nacl.c
 
-test_yuv_simd: test_yuv_simd.c $(CODEC)/g4codec.c
-	$(CC) -O2 -std=c99 -I$(CODEC)/include -o $@ test_yuv_simd.c $(CODEC)/g4codec.c
+test_yuv_simd: test_yuv_simd.c $(CODEC)/g4codec.c $(CODEC)/g4yuv_altivec.c
+	$(CC) -O2 -std=c99 -I$(CODEC)/include -o $@ test_yuv_simd.c $(CODEC)/g4codec.c $(CODEC)/g4yuv_altivec.c
 
 # the AltiVec path, on an emulated G4 (needs powerpc-linux-gnu-gcc + qemu-ppc)
 test-altivec:
-	powerpc-linux-gnu-gcc -O3 -std=c99 -static -mcpu=7450 -maltivec -mabi=altivec -I$(CODEC)/include \
-		-o test_yuv_simd_ppc test_yuv_simd.c $(CODEC)/g4codec.c && qemu-ppc -cpu 7450 ./test_yuv_simd_ppc
+	powerpc-linux-gnu-gcc -O3 -std=c99 -static -mcpu=7450 -maltivec -mabi=altivec -DG4_HAVE_ALTIVEC -I$(CODEC)/include \
+		-o test_yuv_simd_ppc test_yuv_simd.c $(CODEC)/g4codec.c $(CODEC)/g4yuv_altivec.c && qemu-ppc -cpu 7450 ./test_yuv_simd_ppc
 
 clean:
 	rm -f test_codec test_auth test_yuv_simd test_yuv_simd_ppc

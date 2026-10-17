@@ -53,7 +53,7 @@ flags_for() {
     esac
 }
 
-# AltiVec for the codec on G4/G5 (video conversion 8 pixels at a time)
+# AltiVec for the video conversion on G4/G5 (8 pixels at a time)
 vec_for() {
     case "$1" in ppc7400|ppc7450|ppc970) echo "-maltivec -mabi=altivec" ;; *) echo "" ;; esac
 }
@@ -63,14 +63,33 @@ echo "Building the pairing code (step 1 of 5)..."
 gcc -arch ppc -std=gnu99 $COMMON -O2 -c -o "$TMP/auth.o" "$CODEC/g4auth.c" &&
 gcc -arch ppc -std=gnu99 $COMMON -O2 -w -c -o "$TMP/nacl.o" "$CODEC/g4nacl.c" || { rm -rf "$TMP"; exit 1; }
 
+# The AltiVec part is its own small file: Tiger's gcc 4.0 can run out of
+# memory compiling it, so try a few ways and, if none works, that copy of the
+# app just uses the plain (G3) conversion. Prints "-DG4_HAVE_ALTIVEC" if built.
+build_altivec() {
+    A="$1"; F=`flags_for "$1"`
+    for VO in "-maltivec -mabi=altivec -O2" "-maltivec -mabi=altivec -O1" "-faltivec -O2"; do
+        if gcc -arch $A -std=gnu99 $COMMON $F $VO -c -o "$TMP/yuv-$A.o" "$CODEC/g4yuv_altivec.c" >>"$TMP/vec-$A.txt" 2>&1; then
+            echo "-DG4_HAVE_ALTIVEC"; return 0
+        fi
+        rm -f "$TMP/yuv-$A.o"
+    done
+    return 1
+}
+
 # build one CPU-specific copy of the app's program. $1 = arch, $2 = output
 build_slice() {
-    A="$1"; F=`flags_for "$1"`; V=`vec_for "$1"`
+    A="$1"; F=`flags_for "$1"`; HAVE=""; YUVO=""
+    if [ -n "`vec_for $A`" ]; then
+        if HAVE=`build_altivec $A`; then YUVO="$TMP/yuv-$A.o"
+        else echo "  (AltiVec didn't compile with this Xcode; the $A copy uses plain code)" >&3; fi
+    fi
+    echo "$HAVE" > "$TMP/have-$A"
     gcc -arch $A -std=gnu99 $COMMON $F -DG4_APP -c -o "$TMP/client-$A.o" client.c &&
-    { gcc -arch $A -std=gnu99 $COMMON $F $V -c -o "$TMP/codec-$A.o" "$CODEC/g4codec.c" ||
-      gcc -arch $A -std=gnu99 $COMMON $F -c -o "$TMP/codec-$A.o" "$CODEC/g4codec.c"; } &&
+    { gcc -arch $A -std=gnu99 $COMMON $F $HAVE -c -o "$TMP/codec-$A.o" "$CODEC/g4codec.c" ||
+      gcc -arch $A -std=gnu99 $COMMON $F $HAVE -O2 -c -o "$TMP/codec-$A.o" "$CODEC/g4codec.c"; } &&
     gcc -arch $A $COMMON $F -c -o "$TMP/app-$A.o" app.m &&
-    gcc -arch $A -o "$2" "$TMP/app-$A.o" "$TMP/client-$A.o" "$TMP/codec-$A.o" "$TMP/auth.o" "$TMP/nacl.o" \
+    gcc -arch $A -o "$2" "$TMP/app-$A.o" "$TMP/client-$A.o" "$TMP/codec-$A.o" $YUVO "$TMP/auth.o" "$TMP/nacl.o" \
         $LIBS -framework Cocoa
 }
 
@@ -82,7 +101,7 @@ STEP=2
 for A in ppc750 ppc7400 ppc7450 ppc970; do
     echo "Building PowerPC Display.app for $A (step $STEP of 5; each takes a few minutes in a VM)..."
     STEP=`expr $STEP + 1`
-    if build_slice $A "$TMP/PowerPCDisplay-$A" 2>"$TMP/err-$A.txt"; then
+    if build_slice $A "$TMP/PowerPCDisplay-$A" 3>&1 2>"$TMP/err-$A.txt"; then
         SLICES="$SLICES $TMP/PowerPCDisplay-$A"
     else
         echo "  (skipped $A: this Xcode can't build for it)"
@@ -93,9 +112,8 @@ if [ -n "$SLICES" ] && lipo -create $SLICES -output "$APP/Contents/MacOS/PowerPC
     echo "One app for G3, G4 and G5:" `lipo -info "$APP/Contents/MacOS/PowerPCDisplay" | sed 's/.*are: //'`
 else
     echo "Couldn't build per-CPU copies; building one generic version that runs on any PowerPC Mac..."
-    build_slice ppc "$APP/Contents/MacOS/PowerPCDisplay" || { rm -rf "$TMP"; exit 1; }
+    build_slice ppc "$APP/Contents/MacOS/PowerPCDisplay" 3>&1 || { rm -rf "$TMP"; exit 1; }
 fi
-rm -rf "$TMP"
 [ -f AppIcon.icns ] && cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -163,13 +181,20 @@ else
 fi
 
 # the command-line ppcdisplay (debugging, -t test mode): last, so the app is
-# ready first. Skip it with: NO_CLI=1 "./Build PowerPC Display.command"
+# ready first, reusing this Mac's compiled code. Skip it with:
+#   NO_CLI=1 "./Build PowerPC Display.command"
 if [ -z "$NO_CLI" ]; then
     echo
     echo "Also building the command-line ppcdisplay for this Mac (optional; you can close this window)..."
-    case "$THIS_CPU" in ppc750|ppc7400|ppc7450|ppc970) CLI_ARCH=$THIS_CPU ;; *) CLI_ARCH=ppc ;; esac
-    gcc -arch $CLI_ARCH -std=gnu99 $COMMON `flags_for $CLI_ARCH` `vec_for $CLI_ARCH` -o ppcdisplay client.c "$CODEC/g4codec.c" "$CODEC/g4auth.c" "$CODEC/g4nacl.c" $LIBS 2>/dev/null ||
-    gcc -std=gnu99 $COMMON `flags_for ppc` -o ppcdisplay client.c "$CODEC/g4codec.c" "$CODEC/g4auth.c" "$CODEC/g4nacl.c" $LIBS 2>/dev/null &&
-    echo "Built: `pwd`/ppcdisplay"
+    A=ppc
+    for c in $THIS_CPU ppc750 ppc; do [ -f "$TMP/codec-$c.o" ] && { A=$c; break; }; done
+    YUVO=""; [ -f "$TMP/yuv-$A.o" ] && YUVO="$TMP/yuv-$A.o"
+    if gcc -arch $A -std=gnu99 $COMMON `flags_for $A` -c -o "$TMP/cli-$A.o" client.c 2>"$TMP/cli.txt" &&
+       gcc -arch $A -o ppcdisplay "$TMP/cli-$A.o" "$TMP/codec-$A.o" $YUVO "$TMP/auth.o" "$TMP/nacl.o" $LIBS 2>>"$TMP/cli.txt"; then
+        echo "Built: `pwd`/ppcdisplay"
+    else
+        echo "(skipped the command-line tool)"
+    fi
 fi
+rm -rf "$TMP"
 echo "Done."
