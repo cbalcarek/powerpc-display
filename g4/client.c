@@ -1228,7 +1228,7 @@ static void bonjour_register(void)
 
 static void DNSSD_API selfcheck_cb(DNSServiceRef ref, DNSServiceFlags flags, uint32_t ifindex,
                                    DNSServiceErrorType err, const char *fullname, const char *host,
-                                   uint16_t port, uint16_t txtlen, const unsigned char *txt, void *ctx)
+                                   uint16_t port, uint16_t txtlen, const char *txt, void *ctx)   /* Tiger's dns_sd.h: const char * */
 {
     (void)ref; (void)flags; (void)ifindex; (void)fullname; (void)host; (void)port; (void)txtlen; (void)txt;
     *(int *)ctx = err == kDNSServiceErr_NoError ? 1 : -1;
