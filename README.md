@@ -262,7 +262,13 @@ on the PowerPC screen stay where they were. For the wake-up, turn on
 **System Preferences › Energy Saver › Options › Wake for Ethernet network
 administrator access** on the PowerPC Mac (the app reminds you once). Not
 every G3 has that option; then wake it with its keyboard or mouse and it
-reconnects by itself. Turn the whole thing off on the PowerPC Mac with
+reconnects by itself.
+
+Closing a laptop's lid counts as sleep too. To macOS the PowerPC Mac's
+screen is an external monitor, which would otherwise keep a laptop awake in
+clamshell mode, so with the lid closed its display is removed and the Mac
+sleeps as usual. (With a real external monitor attached, the lid behaves as
+normal and the PowerPC Macs stay on.) Turn the whole thing off on the PowerPC Mac with
 **PowerPC Display › Sleep When Your Mac Sleeps**.
 
 ## Logs

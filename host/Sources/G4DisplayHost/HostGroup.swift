@@ -35,6 +35,7 @@ final class HostGroup {
 
     func start() {
         startBrightnessSync()
+        startLidWatch()
         if single { add(name: base.g4Name); return }
         var known = UserDefaults.standard.stringArray(forKey: Self.knownKey) ?? []
         // 0.10 and earlier remembered one PowerPC Mac
@@ -115,6 +116,34 @@ final class HostGroup {
         matchBrightness = on
         if !on { hosts.forEach { h in h.encQ.async { h.sendBrightness(0xFFFF) } } }   // their own again
     }
+    // MARK: laptop lid
+
+    private var lidTimer: Timer?
+    private var lidWasClosed = false
+
+    /// A laptop with its lid closed sees our virtual displays as external
+    /// monitors and stays awake (clamshell mode) instead of sleeping. So treat
+    /// closing the lid as sleep, unless a real external monitor is attached
+    /// (then clamshell mode is what you want): tell the PowerPC Macs to sleep
+    /// and remove their displays, and macOS sleeps as usual.
+    func startLidWatch() {
+        lidTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self, let closed = Lid.isClosed() else { return }
+            if closed == self.lidWasClosed { return }
+            self.lidWasClosed = closed
+            if closed {
+                let ours = Set(self.hosts.compactMap { $0.virtualDisplayID })
+                if Lid.realExternalDisplay(excluding: ours) {
+                    log("lid closed with an external monitor: keeping the PowerPC Macs on")
+                    return
+                }
+                self.hosts.forEach { $0.macWillSleep("the lid was closed", releaseDisplay: true) }
+            } else {
+                self.hosts.forEach { $0.macDidWake("the lid was opened") }
+            }
+        }
+    }
+
     func startBrightnessSync() {
         brightnessTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self, self.matchBrightness, let b = Brightness.current() else { return }

@@ -20,14 +20,31 @@ extension Host {
     }
 
     /// Main thread: this Mac or its displays are going to sleep.
-    func macWillSleep(_ why: String) {
-        lock.lock(); let already = _asleep; _asleep = true; lock.unlock()
+    /// releaseDisplay: also remove the virtual display while asleep (lid
+    /// closed: otherwise macOS treats it as an external monitor and keeps a
+    /// laptop awake in clamshell mode instead of sleeping).
+    func macWillSleep(_ why: String, releaseDisplay: Bool = false) {
+        lock.lock()
+        let already = _asleep
+        _asleep = true
+        if releaseDisplay { _releaseWhileAsleep = true }
+        lock.unlock()
+        if releaseDisplay { wake.signal() }            // the connection thread removes it
         guard !already else { return }
+        // never hold up the main thread for long (a stuck connection must
+        // not freeze the app while the Mac goes to sleep)
         var told = false
-        encQ.sync {
-            guard self.fd >= 0 else { return }
-            if self.clientSleeps, writeAll(self.fd, message(type: Int(G4_MSG_SLEEP), payload: [])) { told = true }
-            shutdown(self.fd, SHUT_RDWR)
+        let done = DispatchSemaphore(value: 0)
+        encQ.async {
+            if self.fd >= 0 {
+                if self.clientSleeps, writeAll(self.fd, message(type: Int(G4_MSG_SLEEP), payload: [])) { told = true }
+                shutdown(self.fd, SHUT_RDWR)
+            }
+            done.signal()
+        }
+        if done.wait(timeout: .now() + 1.5) == .timedOut {
+            log("\(why): the connection didn't respond; dropping it")
+            dropConnection()
         }
         if told {
             lock.lock(); _peerSleeping = true; lock.unlock()
@@ -42,7 +59,7 @@ extension Host {
     func macDidWake(_ why: String) {
         lock.lock()
         let was = _asleep, wakePeer = _peerSleeping
-        _asleep = false; _peerSleeping = false
+        _asleep = false; _peerSleeping = false; _releaseWhileAsleep = false
         lock.unlock()
         guard was else { return }
         wake.signal()

@@ -74,6 +74,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var _fastVideo: Bool
     var _asleep = false                        // this Mac (or its screens) went to sleep
     var _stopped = false                       // forgotten: this Host is finished
+    var _releaseWhileAsleep = false            // lid closed: remove the virtual display too
     var _peerSleeping = false                  // ...and we told the PowerPC Mac to sleep too
     var _stream: SCStream?
     var _scConfig: SCStreamConfiguration?
@@ -157,6 +158,9 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
 
     var isEnabled: Bool { lock.lock(); defer { lock.unlock() }; return _enabled }
     var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return _stopped }
+    /// Its virtual display (main thread).
+    var virtualDisplayID: CGDirectDisplayID? { vdisplay?.displayID }
+
     /// The PowerPC Mac this Host serves (nil: whichever is found).
     var macName: String? { cfg.g4Name }
 
@@ -258,8 +262,16 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
                 announced = false
             }
             if isAsleep {
-                // keep the virtual display (and the windows on it) while asleep
-                while isAsleep && !isStopped { _ = wake.wait(timeout: .now() + 1) }
+                // keep the virtual display (and the windows on it) while
+                // asleep, except with the lid closed (see macWillSleep)
+                while isAsleep && !isStopped {
+                    lock.lock(); let release = _releaseWhileAsleep; lock.unlock()
+                    if release, vdisplay != nil {
+                        log("lid closed: removing the PowerPC Mac's display so this Mac can sleep")
+                        releaseDisplay()
+                    }
+                    _ = wake.wait(timeout: .now() + 1)
+                }
                 announced = false
                 continue
             }
