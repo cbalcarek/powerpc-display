@@ -50,6 +50,11 @@ extension Host {
                 shutdown(self.fd, SHUT_RDWR)
                 return
             }
+            // a newer PowerPC app may have arrived meanwhile (a Tiger build
+            // just finished, or a download): offer it within a minute
+            if !self.peerVersion.isEmpty, self.offered == nil, self.pingSeq % 30 == 29 {
+                self.onClientVersion(self.peerVersion)
+            }
             self.pingSeq &+= 1
             var p = [UInt8](repeating: 0, count: 4)
             put32(&p, 0, self.pingSeq)
