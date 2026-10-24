@@ -71,6 +71,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var _smoothVideo: Bool
     var _fastVideo: Bool
     var _asleep = false                        // this Mac (or its screens) went to sleep
+    var _stopped = false                       // forgotten: this Host is finished
     var _peerSleeping = false                  // ...and we told the PowerPC Mac to sleep too
     var _stream: SCStream?
     var _scConfig: SCStreamConfiguration?
@@ -146,6 +147,17 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     // MARK: - settings (any thread)
 
     var isEnabled: Bool { lock.lock(); defer { lock.unlock() }; return _enabled }
+    var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return _stopped }
+    /// The PowerPC Mac this Host serves (nil: whichever is found).
+    var macName: String? { cfg.g4Name }
+
+    /// Stop for good (the PowerPC Mac was forgotten): drop the connection
+    /// and remove its display.
+    func stop() {
+        lock.lock(); _stopped = true; lock.unlock()
+        dropConnection()
+        wake.signal()
+    }
     var fps: Int { lock.lock(); defer { lock.unlock() }; return _fps }
     var isMirror: Bool { lock.lock(); defer { lock.unlock() }; return _mirror }
     var smoothVideo: Bool { lock.lock(); defer { lock.unlock() }; return _smoothVideo }
@@ -226,15 +238,19 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     private func connectLoop() {
         var announced = false
         while true {
+            if isStopped {
+                releaseDisplay()
+                return
+            }
             if !isEnabled {
                 post(.paused)
                 releaseDisplay()
-                while !isEnabled { _ = wake.wait(timeout: .now() + 1) }
+                while !isEnabled && !isStopped { _ = wake.wait(timeout: .now() + 1) }
                 announced = false
             }
             if isAsleep {
                 // keep the virtual display (and the windows on it) while asleep
-                while isAsleep { _ = wake.wait(timeout: .now() + 1) }
+                while isAsleep && !isStopped { _ = wake.wait(timeout: .now() + 1) }
                 announced = false
                 continue
             }
@@ -244,7 +260,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
             }
             let (sock, name) = conn
             peerName = name
-            if !isEnabled || isAsleep { close(sock); continue }
+            if !isEnabled || isAsleep || isStopped { close(sock); continue }
             announced = false
 
             guard let hello = readHello(sock) else {

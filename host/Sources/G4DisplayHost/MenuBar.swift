@@ -30,13 +30,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     // rebuilt every time it opens, so it's always current
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        menu.addItem(info(model.title))
-        if case .connected(_, let w, let h, let d) = model.status {
-            menu.addItem(info("\(w) × \(h) · \(d)-bit colour"))
-            if let s = model.liveStats(now: nowMs()) {
-                menu.addItem(info(String(format: "%.0f fps · %.0f KB/s · %.0f ms to screen", s.fps, s.kbps, s.latencyMs)))
-            } else {
-                menu.addItem(info("Idle — nothing changing"))
+        if model.peers.isEmpty { menu.addItem(info("Looking for your PowerPC Mac…")) }
+        for peer in model.peers {
+            menu.addItem(info(peer.title))
+            if case .connected(_, let w, let h, let d) = peer.status {
+                menu.addItem(info("    \(w) × \(h) · \(d)-bit colour"))
+                if let s = peer.liveStats(now: nowMs()) {
+                    menu.addItem(info(String(format: "    %.0f fps · %.0f KB/s · %.0f ms to screen", s.fps, s.kbps, s.latencyMs)))
+                } else {
+                    menu.addItem(info("    Idle — nothing changing"))
+                }
             }
         }
 

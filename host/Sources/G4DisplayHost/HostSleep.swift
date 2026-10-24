@@ -6,16 +6,16 @@ import Foundation
 /// the PowerPC Mac is told to sleep too; on wake it's woken with
 /// Wake-on-LAN and the connection comes back as usual.
 extension Host {
-    private static let macKey = "peerMAC"
+    private var macKey: String { cfg.g4Name.map { "peerMAC.\($0)" } ?? "peerMAC" }
 
     var isAsleep: Bool { lock.lock(); defer { lock.unlock() }; return _asleep }
 
     func rememberMAC(_ mac: [UInt8]) {
-        UserDefaults.standard.set(Data(mac), forKey: Self.macKey)
+        UserDefaults.standard.set(Data(mac), forKey: macKey)
     }
 
     var rememberedMAC: [UInt8]? {
-        guard let d = UserDefaults.standard.data(forKey: Self.macKey), d.count == 6 else { return nil }
+        guard let d = UserDefaults.standard.data(forKey: macKey), d.count == 6 else { return nil }
         return [UInt8](d)
     }
 

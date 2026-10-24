@@ -2,33 +2,30 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 
-/// Everything the UI shows. Updated on the main thread from Host callbacks.
-final class AppModel: ObservableObject {
+/// One PowerPC Mac's status, for the UI. Main thread.
+final class PeerModel: ObservableObject, Identifiable {
+    let host: Host
     @Published var status: Host.Status = .searching(nil)
     @Published var stats: Host.Stats?
-    @Published var enabled = true
-    @Published var fps: Int
-    @Published var mirror = false
-    @Published var smoothVideo = true
-    @Published var fastVideo = true
-    @Published var launchAtLogin = false
+    var id: ObjectIdentifier { ObjectIdentifier(host) }
+    var name: String? { host.macName }
 
-    init(fps: Int) { self.fps = fps }
+    init(host: Host) { self.host = host }
 
     var title: String {
         switch status {
-        case .searching(nil): return "Looking for your PowerPC Mac…"
+        case .searching(nil): return name.map { "Looking for “\($0)”…" } ?? "Looking for your PowerPC Mac…"
         case .searching(let addr?): return "Waiting for the PowerPC Mac at \(addr)…"
         case .pairing(let name, _, _): return "Pair with “\(name)”?"
         case .connected(let name, _, _, _): return "Connected to “\(name)”"
-        case .paused: return "Disconnected"
+        case .paused: return name.map { "Disconnected from “\($0)”" } ?? "Disconnected"
         case .needsScreenRecording: return "Screen Recording permission needed"
         case .failed(let why): return why
-        case .cantReach: return "Not connected to the PowerPC Mac"
+        case .cantReach: return name.map { "Not connected to “\($0)”" } ?? "Not connected to the PowerPC Mac"
         }
     }
 
-    var detail: String {
+    func detail(mirror: Bool) -> String {
         switch status {
         case .searching(nil):
             return "Open PowerPC Display on the G3, G4 or G5. Both Macs need an Ethernet cable between them or the same network."
@@ -73,8 +70,32 @@ final class AppModel: ObservableObject {
     }
 }
 
+/// Everything the UI shows. Updated on the main thread from Host callbacks.
+final class AppModel: ObservableObject {
+    @Published var peers: [PeerModel] = []
+    @Published var enabled = true
+    @Published var fps: Int
+    @Published var mirror = false
+    @Published var smoothVideo = true
+    @Published var fastVideo = true
+    @Published var launchAtLogin = false
+
+    init(fps: Int) { self.fps = fps }
+
+    var connected: [PeerModel] { peers.filter(\.isConnected) }
+    var isConnected: Bool { !connected.isEmpty }
+
+    /// one line for the menu bar icon's tooltip and the menu's first line
+    var title: String {
+        let c = connected
+        if c.count == 1 { return c[0].title }
+        if c.count > 1 { return "Connected to \(c.count) PowerPC Macs" }
+        return peers.first?.title ?? "Looking for your PowerPC Mac…"
+    }
+}
+
 final class AppController: NSObject, NSApplicationDelegate {
-    let host: Host
+    let hosts: HostGroup
     let updater = AppUpdater()
     let model: AppModel
     private var menuBar: MenuBarController?
@@ -95,13 +116,13 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     var isBundled: Bool { Bundle.main.bundleIdentifier != nil }
 
-    init(host: Host) {
-        self.host = host
-        self.model = AppModel(fps: host.fps)
+    init(hosts: HostGroup) {
+        self.hosts = hosts
+        self.model = AppModel(fps: hosts.fps)
         super.init()
-        model.mirror = host.isMirror
-        model.smoothVideo = host.smoothVideo
-        model.fastVideo = host.fastVideo
+        model.mirror = hosts.isMirror
+        model.smoothVideo = hosts.smoothVideo
+        model.fastVideo = hosts.fastVideo
     }
 
     // MARK: - lifecycle
@@ -112,31 +133,42 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         let mb = MenuBarController(controller: self)
         menuBar = mb
-        host.onStatus = { [weak self] s in
+        hosts.onAdd = { [weak self] h in
             guard let self else { return }
-            self.model.status = s
-            if !self.model.isConnected { self.model.stats = nil }
+            let peer = PeerModel(host: h)
+            h.onStatus = { [weak self, weak peer] s in
+                guard let peer else { return }
+                peer.status = s
+                if !peer.isConnected { peer.stats = nil }
+                self?.model.objectWillChange.send()
+                self?.menuBar?.updateIcon()
+            }
+            h.onStats = { [weak peer] s in peer?.stats = s }
+            self.model.peers.append(peer)
             self.menuBar?.updateIcon()
         }
-        host.onStats = { [weak self] s in self?.model.stats = s }
+        hosts.onRemove = { [weak self] h in
+            self?.model.peers.removeAll { $0.host === h }
+            self?.menuBar?.updateIcon()
+        }
 
         showWindow()
         if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
-        host.start()
+        hosts.start()
 
         // sleep and wake with this Mac (and its displays)
         let ws = NSWorkspace.shared.notificationCenter
         ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.host.macWillSleep("this Mac is going to sleep")
+            self?.hosts.macWillSleep("this Mac is going to sleep")
         }
         ws.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.host.macWillSleep("the displays went to sleep")
+            self?.hosts.macWillSleep("the displays went to sleep")
         }
         ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.host.macDidWake("this Mac woke up")
+            self?.hosts.macDidWake("this Mac woke up")
         }
         ws.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.host.macDidWake("the displays woke up")
+            self?.hosts.macDidWake("the displays woke up")
         }
         // quietly, at most once a day: a new release, and the PowerPC app for PowerPC Macs
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.updater.check(userInitiated: false) }
@@ -159,7 +191,9 @@ final class AppController: NSObject, NSApplicationDelegate {
                              backing: .buffered, defer: false)
             w.title = "PowerPC Display"
             w.isReleasedWhenClosed = false
-            w.contentView = NSHostingView(rootView: StatusView(model: model, controller: self))
+            let hc = NSHostingController(rootView: StatusView(model: model, controller: self))
+            hc.sizingOptions = [.preferredContentSize]     // the window grows with the list of Macs
+            w.contentViewController = hc
             w.center()
             w.setFrameAutosaveName("PowerPCDisplayStatusWindow")
             window = w
@@ -205,30 +239,30 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     func setEnabled(_ on: Bool) {
         model.enabled = on
-        host.setEnabled(on)
+        hosts.setEnabled(on)
     }
 
     func setMirror(_ on: Bool) {
         model.mirror = on
-        host.setMirror(on)
+        hosts.setMirror(on)
         UserDefaults.standard.set(on, forKey: Self.mirrorKey)
     }
 
     func setSmoothVideo(_ on: Bool) {
         model.smoothVideo = on
-        host.setSmoothVideo(on)
+        hosts.setSmoothVideo(on)
         UserDefaults.standard.set(on, forKey: Self.smoothKey)
     }
 
     func setFastVideo(_ on: Bool) {
         model.fastVideo = on
-        host.setFastVideo(on)
+        hosts.setFastVideo(on)
         UserDefaults.standard.set(on, forKey: Self.fastKey)
     }
 
     func setFPS(_ f: Int) {
         model.fps = f
-        host.setFPS(f)
+        hosts.setFPS(f)
         UserDefaults.standard.set(f, forKey: Self.fpsKey)
     }
 
@@ -248,7 +282,17 @@ final class AppController: NSObject, NSApplicationDelegate {
         a.informativeText = "Each PowerPC Mac will have to pair again, showing a code on both Macs, the next time it connects."
         a.addButton(withTitle: "Forget")
         a.addButton(withTitle: "Cancel")
-        if a.runModal() == .alertFirstButtonReturn { host.forgetPairings() }
+        if a.runModal() == .alertFirstButtonReturn { hosts.forgetPairings() }
+    }
+
+    /// Stop showing one PowerPC Mac that isn't connected (an old VM, say).
+    func forget(_ peer: PeerModel) {
+        let a = NSAlert()
+        a.messageText = "Stop looking for “\(peer.name ?? "this PowerPC Mac")”?"
+        a.informativeText = "It's removed from this list. If it shows up on the network again, it comes back."
+        a.addButton(withTitle: "Remove")
+        a.addButton(withTitle: "Cancel")
+        if a.runModal() == .alertFirstButtonReturn { hosts.forget(peer.host) }
     }
 
     func openDisplaySettings() { open("x-apple.systempreferences:com.apple.Displays-Settings.extension") }
@@ -267,37 +311,11 @@ struct StatusView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 14) {
-                Image(systemName: model.symbol)
-                    .font(.system(size: 30, weight: .regular))
-                    .foregroundStyle(model.isConnected ? Color.accentColor : Color.secondary)
-                    .frame(width: 40)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.title).font(.headline)
-                    Text(model.detail)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            if model.peers.isEmpty {
+                PeerRow(peer: nil, mirror: model.mirror, controller: controller)
             }
-
-            if model.isConnected {
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    if let s = model.liveStats(now: nowMs()) {
-                        HStack(spacing: 24) {
-                            stat(String(format: "%.0f", s.fps), "fps")
-                            stat(String(format: "%.0f", s.kbps), "KB/s")
-                            stat(String(format: "%.0f", s.latencyMs), "ms to screen")
-                        }
-                    } else {
-                        Text("Idle — nothing on its screen is changing")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            if case .needsScreenRecording = model.status {
-                Button("Open Screen Recording Settings…") { controller.openPrivacySettings() }
+            ForEach(model.peers) { peer in
+                PeerRow(peer: peer, mirror: model.mirror, controller: controller)
             }
 
             Divider()
@@ -344,11 +362,83 @@ struct StatusView: View {
         .padding(20)
         .frame(width: 480)
     }
+}
 
-    private func stat(_ value: String, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(value).font(.system(size: 22, weight: .semibold, design: .rounded)).monospacedDigit()
-            Text(label).font(.caption).foregroundStyle(.secondary)
+/// One PowerPC Mac in the status window (nil: none found yet).
+struct PeerRow: View {
+    let peer: PeerModel?
+    let mirror: Bool
+    let controller: AppController
+
+    var body: some View {
+        if let peer { Row(peer: peer, mirror: mirror, controller: controller) }
+        else {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.system(size: 30)).foregroundStyle(Color.secondary).frame(width: 40)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Looking for your PowerPC Mac…").font(.headline)
+                    Text("Open PowerPC Display on the G3, G4 or G5. Both Macs need an Ethernet cable between them or the same network.")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private struct Row: View {
+        @ObservedObject var peer: PeerModel
+        let mirror: Bool
+        let controller: AppController
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 14) {
+                    Image(systemName: peer.symbol)
+                        .font(.system(size: 30, weight: .regular))
+                        .foregroundStyle(peer.isConnected ? Color.accentColor : Color.secondary)
+                        .frame(width: 40)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(peer.title).font(.headline)
+                        Text(peer.detail(mirror: mirror))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    if !peer.isConnected, peer.name != nil {
+                        Button("Remove") { controller.forget(peer) }
+                            .controlSize(.small)
+                            .help("Stop looking for this PowerPC Mac")
+                    }
+                }
+                if peer.isConnected {
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        if let s = peer.liveStats(now: nowMs()) {
+                            HStack(spacing: 24) {
+                                stat(String(format: "%.0f", s.fps), "fps")
+                                stat(String(format: "%.0f", s.kbps), "KB/s")
+                                stat(String(format: "%.0f", s.latencyMs), "ms to screen")
+                            }
+                            .padding(.leading, 54)
+                        } else {
+                            Text("Idle — nothing on its screen is changing")
+                                .font(.callout).foregroundStyle(.secondary)
+                                .padding(.leading, 54)
+                        }
+                    }
+                }
+                if case .needsScreenRecording = peer.status {
+                    Button("Open Screen Recording Settings…") { controller.openPrivacySettings() }
+                        .padding(.leading, 54)
+                }
+            }
+        }
+
+        private func stat(_ value: String, _ label: String) -> some View {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(value).font(.system(size: 22, weight: .semibold, design: .rounded)).monospacedDigit()
+                Text(label).font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 }

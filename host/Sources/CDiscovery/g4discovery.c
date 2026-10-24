@@ -222,6 +222,45 @@ int g4_discover(const char *name_filter, int timeout_ms, g4_found *out)
     return -1;
 }
 
+/* ---------- every PowerPC Mac on the network ---------- */
+
+int g4_browse_names(int timeout_ms, char *buf, int bufsize)
+{
+    disc_ctx c;
+    DNSServiceRef ref = NULL;
+    long long deadline;
+    int fd, i, n = 0;
+    size_t used = 0;
+    memset(&c, 0, sizeof c);
+    if (bufsize > 0) buf[0] = 0;
+    if (DNSServiceBrowse(&ref, 0, 0, G4_BONJOUR_TYPE, NULL, browse_cb, &c) != kDNSServiceErr_NoError) return -1;
+    fd = DNSServiceRefSockFD(ref);
+    deadline = now_ms() + timeout_ms;
+    while (fd >= 0 && !c.failed) {                 /* collect for the whole time */
+        long long left = deadline - now_ms();
+        fd_set rf;
+        struct timeval tv;
+        if (left <= 0) break;
+        FD_ZERO(&rf); FD_SET(fd, &rf);
+        tv.tv_sec = (long)(left / 1000);
+        tv.tv_usec = (int)((left % 1000) * 1000);
+        if (select(fd + 1, &rf, NULL, NULL, &tv) <= 0) break;
+        if (DNSServiceProcessResult(ref) != kDNSServiceErr_NoError) break;
+    }
+    DNSServiceRefDeallocate(ref);
+    if (c.failed) return -1;
+    for (i = 0; i < c.ncand; i++) {
+        size_t len = strlen(c.c[i].name);
+        if (c.c[i].gone || used + len + 2 > (size_t)bufsize) continue;
+        memcpy(buf + used, c.c[i].name, len);
+        used += len;
+        buf[used++] = '\n';
+        buf[used] = 0;
+        n++;
+    }
+    return n;
+}
+
 /* ---------- Wake-on-LAN ---------- */
 
 int g4_wake_on_lan(const uint8_t mac[6])

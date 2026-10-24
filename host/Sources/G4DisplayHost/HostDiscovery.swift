@@ -4,18 +4,21 @@ import Foundation
 
 /// Finding the PowerPC Mac (connection thread).
 extension Host {
-    private static let endpointKey = "lastEndpoint"
+    static let legacyEndpointKey = "lastEndpoint"
+    /// one remembered address per PowerPC Mac
+    private var endpointKey: String { cfg.g4Name.map { "lastEndpoint.\($0)" } ?? Self.legacyEndpointKey }
 
     /// Remember where the PowerPC Mac was reached, across launches too, so a
     /// stuck Bonjour on either Mac doesn't stop it reconnecting.
     func remember(_ host: String, _ port: UInt16, _ name: String) {
         lastEndpoint = (host, port, name)
-        UserDefaults.standard.set(["host": host, "port": Int(port), "name": name], forKey: Self.endpointKey)
+        UserDefaults.standard.set(["host": host, "port": Int(port), "name": name], forKey: endpointKey)
     }
 
     func loadRememberedEndpoint() {
         guard cfg.g4Address == nil,
-              let d = UserDefaults.standard.dictionary(forKey: Self.endpointKey),
+              let d = UserDefaults.standard.dictionary(forKey: endpointKey)
+                ?? UserDefaults.standard.dictionary(forKey: Self.legacyEndpointKey),   // from 0.10 and earlier
               let host = d["host"] as? String, let port = d["port"] as? Int, let name = d["name"] as? String,
               port > 0, port < 65536
         else { return }

@@ -71,6 +71,6 @@ let activity = ProcessInfo.processInfo.beginActivity(
 
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)     // Dock icon + window; menu bar item too
-let controller = AppController(host: Host(config: cfg))
+let controller = AppController(hosts: HostGroup(config: cfg))
 app.delegate = controller             // weak reference: kept alive below
 withExtendedLifetime((activity, controller)) { app.run() }

@@ -32,6 +32,13 @@ typedef struct {
 int g4_discover(const char *name_filter, int timeout_ms, g4_found *out);
 
 /*
+ * The names of every PowerPC Mac advertising on the network, collected for
+ * timeout_ms, into buf one per line. Returns how many, or -1 if Bonjour
+ * failed.
+ */
+int g4_browse_names(int timeout_ms, char *buf, int bufsize);
+
+/*
  * Send a Wake-on-LAN "magic packet" for this Ethernet address out of every
  * network interface that's up (broadcast, UDP ports 9 and 7), so it reaches
  * a PowerPC Mac on a direct cable as well as one on the home network.

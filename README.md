@@ -199,6 +199,30 @@ Already using BetterDisplay? `PowerPCDisplay --list` shows display IDs, and
 `PowerPCDisplay --display-id <id>` captures that display instead of creating
 one (make it the PowerPC Mac's resolution, non-HiDPI).
 
+## Several PowerPC Macs at once
+
+Every PowerPC Mac running PowerPC Display that the Apple Silicon Mac finds
+becomes its own extra display (or mirror), each with its own row in the
+status window and menu. They're remembered, so a known one reconnects at its
+last address even when Bonjour isn't answering. **Remove** (shown while one
+isn't connected) stops looking for it, e.g. an old VM; it comes back if it
+appears on the network again.
+
+## Updates
+
+- **Apple Silicon Mac:** **Check for Updates…** (app menu or menu bar
+  menu; also checked quietly once a day) looks at this repository's GitHub
+  releases, so the repository has to be public. A newer Mac app is
+  downloaded, checked (it must be signed by the same certificate as the one
+  you have, or it asks first), swapped in and reopened.
+- **PowerPC Macs:** they can't reach GitHub themselves (Tiger is too old
+  for its secure connections), so the Apple Silicon Mac keeps the newest
+  Tiger app (from the GitHub release, from `releases/` after a Tiger build,
+  or built into the Mac app) and offers it when an older PowerPC app
+  connects. It arrives in the background with a checksum; **Install and
+  Restart** appears when you're back at the PowerPC Mac's window (or
+  **PowerPC Display › Install Update…**).
+
 ## Updating the PowerPC side (no discs, no zips)
 
 On the Apple Silicon Mac, double-click **Share with PowerPC Mac.command** and
@@ -312,6 +336,17 @@ Open Anyway.
   refresh, so fast scrolling can show a rare tear line;
   **Performance › Always Draw with OpenGL** goes back to OpenGL (which
   works on those GPUs too, with a power-of-two texture).
+- Moves in any direction (a window being dragged, sideways scrolling) are
+  found by sampling 16-pixel segments of what changed and finding them in
+  the previous frame with a rolling hash; the largest block that moved
+  exactly is one COPY.
+- Text and interface areas (tiles with at most 256 colours, 16 at 16-bit)
+  are grouped and sent as a palette plus 1-, 2-, 4- or 8-bit indices, then
+  LZ4: typically 2–3 times less data than LZ4 on the pixels.
+- Adaptive pacing: normally two frames are in flight, so the network and
+  the PowerPC Mac's decoding overlap; while you move the mouse or scroll and
+  frames take over 60 ms to reach the screen, only one, so the picture stays
+  at most a frame behind your hand.
 - Scrolling is found by matching rows in 32-pixel column bands, so a
   wallpaper edge, a sidebar, a sticky header or an overlay scrollbar next
   to the scrolling content doesn't hide it; the page moves with one COPY
