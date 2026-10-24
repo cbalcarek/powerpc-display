@@ -69,11 +69,17 @@ enum {
                            pixels as Cb,Y0,Cr,Y1 (an odd last pixel is paired
                            with itself). depth 32 only; both sides turn it back
                            into RGB with the same integer maths (g4_yuv_*). */
+    ,G4_RECT_YUVH = 8   /* + u32 clen, then a half-resolution 4:2:2 picture of
+                           the rect, ((w+1)/2) x ((h+1)/2), laid out like
+                           G4_RECT_YUV. The client doubles it back to w x h
+                           (g4_yuvh_paint: in-between pixels are averages).
+                           Video only, when the client set G4_HELLO_FLAG_YUVH. */
 };
 
 /* HELLO flags (byte 11), set by the client */
 #define G4_HELLO_FLAG_YUV   0x01   /* client can decode G4_RECT_YUV */
 #define G4_HELLO_FLAG_AUTH  0x02   /* HELLO v2: client id, nonce and key follow; AUTH required */
+#define G4_HELLO_FLAG_YUVH  0x04   /* client can decode G4_RECT_YUVH (half-resolution video) */
 
 /* tile cache: 32x32 tiles the client keeps so content it has seen before
    (menus closing, switching apps back, caret blink) costs 12 bytes */
@@ -148,6 +154,10 @@ void        g4enc_set_time(g4_encoder *e, uint32_t ms);
    G4_HELLO_FLAG_YUV and depth is 32. Such tiles are resent losslessly once
    they have been still for a moment (see g4enc_refresh_due). */
 void        g4enc_set_yuv(g4_encoder *e, int on);
+/* With 4:2:2 on: send video regions at half width and height (a quarter of
+   the data; softer while moving). Only if the client set G4_HELLO_FLAG_YUVH.
+   Still video sharpens back to lossless the same way. */
+void        g4enc_set_yuv_half(g4_encoder *e, int on);
 /* ms until a lossless refresh of still video tiles is due (0 = now), or -1
    if none is pending. The host should call g4enc_encode again by then even
    if the screen hasn't changed. */
@@ -198,6 +208,11 @@ void g4_yuv_from_pair(const uint8_t *argb0, const uint8_t *argb1, uint8_t *out4)
 void g4_yuv_to_pair(const uint8_t *in4, uint8_t *argb0, uint8_t *argb1);
 /* a whole row of w pixels (AltiVec on G4/G5 builds; identical results) */
 void g4_yuv_row(const uint8_t *in, uint8_t *out, unsigned w);
+/* paint a half-resolution 4:2:2 picture (G4_RECT_YUVH payload) at full size
+   w x h into dst (A,R,G,B, row stride `stride`). rows: scratch for two
+   ((w+1)/2)-pixel rows (8 * ((w+1)/2) bytes, 4-byte aligned). Encoder and
+   decoder both use this, so the encoder's model stays exact. */
+void g4_yuvh_paint(const uint8_t *src, unsigned w, unsigned h, uint8_t *dst, size_t stride, uint8_t *rows);
 int  g4_yuv_simd_available(void);   /* 1 if built with AltiVec */
 void g4_yuv_set_simd(int on);       /* default on; for speed comparisons */
 int  g4_yuv_get_simd(void);

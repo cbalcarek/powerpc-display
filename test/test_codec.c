@@ -301,7 +301,7 @@ static int lz4_selftest(void)
 
 /* 4:2:2 video path: the client must always equal the encoder's model, and
    once the video stops everything must become exact again */
-static int one_yuv(int w, int h, int with_cache)
+static int one_yuv(int w, int h, int with_cache, int half)
 {
     g4_encoder *e = g4enc_create(w, h, 32);
     uint8_t *fb = (uint8_t *)calloc((size_t)w * h, 4);
@@ -313,6 +313,7 @@ static int one_yuv(int w, int h, int with_cache)
     g4dec_init(&d, fb, w, h, 32);
     if (with_cache) { g4dec_enable_cache(&d, 512); g4enc_enable_cache(e, 512); }
     g4enc_set_yuv(e, 1);
+    g4enc_set_yuv_half(e, half);
 
 #define YSTEP(expect_exact) do {                                                     \
         const uint8_t *msg; size_t n; g4_enc_stats st;                                \
@@ -369,8 +370,8 @@ static int one_yuv(int w, int h, int with_cache)
     g4enc_set_yuv(e, 0);
     for (i = 0; i < 5; i++) { src[(size_t)(h / 2) * w * 4 + 4 * (size_t)i] ^= 0x33; t += 33; YSTEP(1); }
 
-    printf("yuv %dx%d%s: %d video rects, %d tiles refreshed, avg video frame %.0f KB, %s\n", w, h,
-           with_cache ? " +cache" : "", yuvs, refreshes, yuvs ? vbytes / 1024 / 40 : 0.0, fails ? "FAILED" : "ok");
+    printf("yuv %dx%d%s%s: %d video rects, %d tiles refreshed, avg video frame %.0f KB, %s\n", w, h,
+           with_cache ? " +cache" : "", half ? " half-res" : "", yuvs, refreshes, yuvs ? vbytes / 1024 / 40 : 0.0, fails ? "FAILED" : "ok");
 #undef YSTEP
     g4dec_free(&d); free(fb); free(src); g4enc_destroy(e);
     return fails;
@@ -437,9 +438,13 @@ static int run_yuv(void)
         g4_yuv_from_pair(a, a, o); g4_yuv_to_pair(o, r0, r1);
         if (abs(r0[1] - k) > 1 || abs(r0[2] - k) > 1 || abs(r0[3] - k) > 1) { printf("yuv grey %d -> %d,%d,%d\n", k, r0[1], r0[2], r0[3]); fails++; break; }
     }
-    fails += one_yuv(W, H, 1);
-    fails += one_yuv(W, H, 0);
-    fails += one_yuv(101, 67, 1);     /* odd width: last pixel paired with itself */
+    fails += one_yuv(W, H, 1, 0);
+    fails += one_yuv(W, H, 0, 0);
+    fails += one_yuv(101, 67, 1, 0);     /* odd width: last pixel paired with itself */
+    fails += one_yuv(W, H, 1, 1);        /* half-resolution video */
+    fails += one_yuv(W, H, 0, 1);
+    fails += one_yuv(101, 67, 1, 1);     /* odd sizes at half resolution */
+    fails += one_yuv(103, 69, 0, 1);
     return fails;
 }
 

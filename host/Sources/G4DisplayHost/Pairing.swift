@@ -12,6 +12,7 @@ struct Hello {
 
     var supportsAuth: Bool { flags & Int(G4_HELLO_FLAG_AUTH) != 0 && clientID.count == 16 }
     var supportsYUV: Bool { flags & Int(G4_HELLO_FLAG_YUV) != 0 }
+    var supportsHalfVideo: Bool { flags & Int(G4_HELLO_FLAG_YUVH) != 0 }
 }
 
 /// Paired PowerPC Macs. Keys live in the login keychain; names (for display

@@ -54,6 +54,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         sv.state = model.smoothVideo ? .on : .off
         sv.toolTip = "Areas playing video are sent with half the data (slightly softer colours)."
         menu.addItem(sv)
+        // greyed out (no action) unless Smoother Video is on
+        let fv = model.smoothVideo ? action("Faster Video (Half Resolution)", #selector(toggleFast))
+                                   : info("Faster Video (Half Resolution)")
+        fv.state = model.fastVideo ? .on : .off
+        fv.indentationLevel = 1
+        fv.toolTip = "Video is sent at half width and height: a quarter of the data. It sharpens as soon as it stops moving."
+        menu.addItem(fv)
 
         let fpsItem = NSMenuItem(title: "Frame Rate", action: nil, keyEquivalent: "")
         let fpsMenu = NSMenu()
@@ -90,6 +97,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func setExtend() { controller.setMirror(false) }
     @objc private func setMirror() { controller.setMirror(true) }
     @objc private func toggleSmooth() { controller.setSmoothVideo(!model.smoothVideo) }
+    @objc private func toggleFast() { controller.setFastVideo(!model.fastVideo) }
     @objc private func forgetPairings() { controller.forgetPairings() }
     @objc private func quit() { NSApp.terminate(nil) }
 }

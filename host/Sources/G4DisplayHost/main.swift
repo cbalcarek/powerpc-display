@@ -18,6 +18,7 @@ func usage() -> Never {
       --mirror          mirror the main display instead of adding one
       --extend          add a display (default, unless Mirror was chosen in the app)
       --sharp-video     send video regions losslessly (turns off Smoother Video)
+      --full-res-video  send video at full resolution (turns off Faster Video)
       -v                print throughput / latency stats every 5 s
       --list            list displays and exit
     """)
@@ -38,6 +39,7 @@ var cfg = Host.Config()
 if let saved = AppController.savedFPS { cfg.fps = saved }
 cfg.mirror = AppController.savedMirror
 cfg.smoothVideo = AppController.savedSmoothVideo
+cfg.fastVideo = AppController.savedFastVideo
 var i = 0
 if let first = args.first, !first.hasPrefix("-") {
     cfg.g4Address = first
@@ -56,6 +58,7 @@ while i < args.count {
     case "--mirror": cfg.mirror = true
     case "--extend": cfg.mirror = false
     case "--sharp-video": cfg.smoothVideo = false
+    case "--full-res-video": cfg.fastVideo = false
     default: usage()
     }
     i += 1

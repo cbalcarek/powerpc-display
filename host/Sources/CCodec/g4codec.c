@@ -218,6 +218,47 @@ void g4_yuv_row(const uint8_t *in, uint8_t *out, unsigned w)
     if (x < w) g4_yuv_to_pair(in + 2 * x, out + 4 * x, tmp);
 }
 
+/* ---- half-resolution video ---- */
+
+/* average of two A,R,G,B pixels, byte by byte, rounding up (any byte order) */
+static uint32_t avg_px(uint32_t a, uint32_t b)
+{
+    return (a | b) - (((a ^ b) >> 1) & 0x7F7F7F7Fu);
+}
+static uint32_t ld32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
+static void st32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
+
+/* One output row from half-res rows a and b (b == a for the even rows):
+   pixel 2i is avg(a[i], b[i]), pixel 2i+1 also averages with column i+1. */
+static void yuvh_row_out(const uint8_t *a, const uint8_t *b, unsigned hw, uint8_t *out, unsigned w)
+{
+    unsigned i;
+    uint32_t cur = a == b ? ld32(a) : avg_px(ld32(a), ld32(b));
+    for (i = 0; i < hw; i++) {
+        uint32_t nxt = cur;
+        if (i + 1 < hw) nxt = a == b ? ld32(a + 4 * i + 4) : avg_px(ld32(a + 4 * i + 4), ld32(b + 4 * i + 4));
+        st32(out + 8 * i, cur);
+        if (2 * i + 1 < w) st32(out + 8 * i + 4, avg_px(cur, nxt));
+        cur = nxt;
+    }
+}
+
+void g4_yuvh_paint(const uint8_t *src, unsigned w, unsigned h, uint8_t *dst, size_t stride, uint8_t *rows)
+{
+    unsigned hw = (w + 1) / 2, hh = (h + 1) / 2, pairs = (hw + 1) / 2, j;
+    size_t rowy = (size_t)pairs * 4;
+    uint8_t *a = rows, *b = rows + 4 * (size_t)hw, *t;
+    if (!w || !h) return;
+    g4_yuv_row(src, a, hw);
+    for (j = 0; j < hh; j++) {
+        int more = j + 1 < hh;
+        if (more) g4_yuv_row(src + (size_t)(j + 1) * rowy, b, hw);
+        yuvh_row_out(a, a, hw, dst + (size_t)(2 * j) * stride, w);
+        if (2 * j + 1 < h) yuvh_row_out(a, more ? b : a, hw, dst + (size_t)(2 * j + 1) * stride, w);
+        t = a; a = b; b = t;
+    }
+}
+
 /* ======================================================================
  * Encoder
  * ==================================================================== */
@@ -274,6 +315,9 @@ struct g4_encoder {
        lossy version); lhash remembers the exact source so the still tile
        isn't resent every frame, and it is resent losslessly once still */
     int       yuv;
+    int       yuvh;      /* video at half resolution (G4_RECT_YUVH) */
+    uint8_t  *hrows;     /* two half-res rows for g4_yuvh_paint */
+    size_t    hrows_cap;
     uint8_t  *tfast;       /* per tile: changed again within YUV_FAST_MS */
     uint8_t  *lossy;
     uint64_t *lhash;
@@ -365,7 +409,7 @@ void g4enc_destroy(g4_encoder *e)
     free(e->cur); free(e->model); free(e->tiles); free(e->rects);
     free(e->out); free(e->gather); free(e->lz);
     free(e->hc); free(e->hm); free(e->uc); free(e->um); free(e->votes);
-    free(e->tkey); free(e->tval);
+    free(e->tkey); free(e->tval); free(e->hrows);
     free(e->cpx); free(e->chash); free(e->cvalid); free(e->cref); free(e->ctab);
     free(e->thash); free(e->tstate); free(e->tlast); free(e->tvol);
     free(e->tfast); free(e->lossy); free(e->lhash); free(e->llast); free(e->refresh); free(e->vmask); free(e->dmask);
@@ -386,6 +430,7 @@ static void cache_clear(g4_encoder *e)
 void g4enc_set_time(g4_encoder *e, uint32_t ms) { e->now_ms = ms; e->clock_set = 1; }
 
 void g4enc_set_yuv(g4_encoder *e, int on) { e->yuv = on && e->depth == 32; }
+void g4enc_set_yuv_half(g4_encoder *e, int on) { e->yuvh = on != 0; }
 
 int g4enc_refresh_due(const g4_encoder *e, uint32_t now_ms)
 {
@@ -1011,6 +1056,51 @@ static int encode_rect_yuv(g4_encoder *e, const mrect *r, uint8_t **wp, g4_enc_s
     return 0;
 }
 
+/* one video rect at half resolution: each half-res pixel is the average of
+   a 2x2 block; the model gets what the client paints (g4_yuvh_paint) */
+static int encode_rect_yuvh(g4_encoder *e, const mrect *r, uint8_t **wp, g4_enc_stats *st)
+{
+    unsigned w = (unsigned)r->w, h = (unsigned)r->h, hw = (w + 1) / 2, hh = (h + 1) / 2;
+    unsigned pairs = (hw + 1) / 2, j, k;
+    size_t rowy = (size_t)pairs * 4, raw = rowy * hh, xoff = (size_t)r->x * 4;
+    size_t pos = (size_t)(*wp - e->out), clen;
+    uint8_t *p;
+
+    if (ensure(&e->gather, &e->gather_cap, raw)) return -1;
+    if (ensure(&e->lz, &e->lz_cap, g4_lz4_bound(raw))) return -1;
+    if (ensure(&e->hrows, &e->hrows_cap, (size_t)hw * 8 + 8)) return -1;
+    for (j = 0; j < hh; j++) {
+        const uint8_t *r0 = e->cur + (size_t)(r->y + 2 * j) * e->stride + xoff;
+        const uint8_t *r1 = 2 * j + 1 < h ? r0 + e->stride : r0;
+        uint8_t *g = e->gather + (size_t)j * rowy;
+        for (k = 0; k < pairs; k++) {
+            uint32_t q[2];
+            int t;
+            for (t = 0; t < 2; t++) {
+                unsigned hx = 2 * k + (unsigned)t < hw ? 2 * k + (unsigned)t : hw - 1;
+                unsigned x0 = 2 * hx, x1 = x0 + 1 < w ? x0 + 1 : x0;
+                q[t] = avg_px(avg_px(ld32(r0 + 4 * x0), ld32(r0 + 4 * x1)),
+                              avg_px(ld32(r1 + 4 * x0), ld32(r1 + 4 * x1)));
+            }
+            g4_yuv_from_pair((const uint8_t *)&q[0], (const uint8_t *)&q[1], g + 4 * k);
+        }
+    }
+    g4_yuvh_paint(e->gather, w, h, e->model + (size_t)r->y * e->stride + xoff, e->stride, e->hrows);
+    if (st) { st->raw_bytes += (uint32_t)((size_t)w * h * 4); st->yuvs++; st->rects++; }
+
+    clen = g4_lz4_compress(e->gather, raw, e->lz, e->lz_cap);
+    if (!(clen && clen + 4 < raw)) clen = 0;
+    if (ensure(&e->out, &e->out_cap, pos + 14 + (clen ? clen : raw))) return -1;
+    p = e->out + pos;
+    p[0] = G4_RECT_YUVH; p[1] = 0;
+    g4_put16(p + 2, (uint32_t)r->x); g4_put16(p + 4, (uint32_t)r->y);
+    g4_put16(p + 6, (uint32_t)w);    g4_put16(p + 8, (uint32_t)h);
+    g4_put32(p + 10, (uint32_t)clen);
+    memcpy(p + 14, clen ? e->lz : e->gather, clen ? clen : raw);
+    *wp = p + 14 + (clen ? clen : raw);
+    return 0;
+}
+
 /* send tiles changing at video rate as 4:2:2 */
 static int yuv_pass(g4_encoder *e, uint8_t **wp, int *nrects, int *changed, g4_enc_stats *st)
 {
@@ -1025,7 +1115,7 @@ static int yuv_pass(g4_encoder *e, uint8_t **wp, int *nrects, int *changed, g4_e
     for (i = 0; i < nr; i++) {
         const mrect *r = &e->rects[i];
         int tx, ty;
-        if (encode_rect_yuv(e, r, wp, st)) return -1;
+        if (e->yuvh && r->w >= 16 && r->h >= 16 ? encode_rect_yuvh(e, r, wp, st) : encode_rect_yuv(e, r, wp, st)) return -1;
         for (ty = r->y / TILE; ty * TILE < r->y + r->h; ty++)
             for (tx = r->x / TILE; tx * TILE < r->x + r->w; tx++) {
                 int t = ty * e->tw + tx;
@@ -1289,6 +1379,33 @@ int g4dec_frame(g4_decoder *d, const uint8_t *p, size_t len, uint32_t *frame_id)
             }
             for (r = 0; r < (int)h; r++)
                 g4_yuv_row(src + (size_t)r * rowy, d->fb + (size_t)(y + r) * d->stride + xoff, w);
+            break;
+        }
+        case G4_RECT_YUVH: {
+            unsigned hw = (w + 1) / 2, hh = (h + 1) / 2, pairs = (hw + 1) / 2;
+            size_t rowy = (size_t)pairs * 4, raw = rowy * hh, clen, need;
+            const uint8_t *src;
+            if (d->bpp != 4) return -8;
+            if (end - p < 4) return -2;
+            clen = g4_get32(p); p += 4;
+            need = (clen ? raw : 0) + (size_t)hw * 8 + 8;      /* decompressed data + two rows */
+            if (need > d->scratch_cap) {
+                uint8_t *nb = (uint8_t *)realloc(d->scratch, need);
+                if (!nb) return -5;
+                d->scratch = nb; d->scratch_cap = need;
+            }
+            if (clen) {
+                if ((size_t)(end - p) < clen) return -2;
+                if (g4_lz4_decompress(p, clen, d->scratch, raw)) return -4;
+                src = d->scratch;
+                p += clen;
+            } else {
+                if ((size_t)(end - p) < raw) return -2;
+                src = p;
+                p += raw;
+            }
+            g4_yuvh_paint(src, w, h, d->fb + (size_t)y * d->stride + xoff, d->stride,
+                          d->scratch + (clen ? raw : 0));
             break;
         }
         default:

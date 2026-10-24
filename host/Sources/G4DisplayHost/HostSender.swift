@@ -5,7 +5,7 @@ import Foundation
 /// Everything here runs on encQ unless noted.
 extension Host {
     /// New connection: fresh encoder, counters and the ping timer.
-    func beginStreaming(_ sock: Int32, yuv: Bool, mirroring: Bool) {
+    func beginStreaming(_ sock: Int32, yuv: Bool, halfVideo: Bool, mirroring: Bool) {
         fd = sock
         if let e = enc { g4enc_destroy(e) }
         enc = g4enc_create(Int32(W), Int32(H), Int32(depth))
@@ -13,7 +13,11 @@ extension Host {
             log("tile cache disabled (out of memory)")
         }
         clientYUV = yuv
-        if let e = enc { g4enc_set_yuv(e, clientYUV && smoothVideo ? 1 : 0) }
+        clientHalfVideo = halfVideo
+        if let e = enc {
+            g4enc_set_yuv(e, clientYUV && smoothVideo ? 1 : 0)
+            g4enc_set_yuv_half(e, clientHalfVideo && fastVideo ? 1 : 0)
+        }
         sentID = 0; ackedID = 0; pending = false
         sendTimes.removeAll()
         needFullIngest = true

@@ -36,6 +36,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         var verbose = false
         var mirror = false                     // show the main display instead of a new one
         var smoothVideo = true                 // video regions as 4:2:2 (half the data, softer)
+        var fastVideo = true                   // ...and at half resolution (a quarter of that)
     }
 
     enum Status: Equatable {
@@ -67,6 +68,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var _fps: Int
     var _mirror: Bool
     var _smoothVideo: Bool
+    var _fastVideo: Bool
     var _stream: SCStream?
     var _scConfig: SCStreamConfiguration?
     let wake = DispatchSemaphore(value: 0)
@@ -77,6 +79,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var fd: Int32 = -1
     var enc: OpaquePointer?
     var clientYUV = false                      // the connected client can decode 4:2:2 rects
+    var clientHalfVideo = false                // ...and half-resolution ones (0.11+)
     var refreshScheduled = false
     var sentID: UInt32 = 0
     var ackedID: UInt32 = 0
@@ -120,6 +123,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         _fps = config.fps
         _mirror = config.mirror
         _smoothVideo = config.smoothVideo
+        _fastVideo = config.fastVideo
         super.init()
         loadRememberedEndpoint()
     }
@@ -136,6 +140,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var fps: Int { lock.lock(); defer { lock.unlock() }; return _fps }
     var isMirror: Bool { lock.lock(); defer { lock.unlock() }; return _mirror }
     var smoothVideo: Bool { lock.lock(); defer { lock.unlock() }; return _smoothVideo }
+    var fastVideo: Bool { lock.lock(); defer { lock.unlock() }; return _fastVideo }
 
     /// Pause/resume. Pausing drops the connection and removes the virtual display.
     func setEnabled(_ on: Bool) {
@@ -156,6 +161,17 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
             g4enc_set_yuv(e, on && self.clientYUV ? 1 : 0)
             self.pending = true      // re-encode so video tiles become exact if turned off
             self.trySend()
+        }
+    }
+
+    /// With Smoother Video: send video regions at half width and height too
+    /// (a quarter of the data, softer while playing). Applies immediately;
+    /// PowerPC apps older than 0.11 just keep getting full resolution.
+    func setFastVideo(_ on: Bool) {
+        lock.lock(); _fastVideo = on; lock.unlock()
+        encQ.async {
+            guard let e = self.enc else { return }
+            g4enc_set_yuv_half(e, on && self.clientHalfVideo ? 1 : 0)
         }
     }
 
@@ -243,7 +259,8 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
                 close(sock); sleep(3); continue
             }
             let yuv = hello.depth == 32 && hello.supportsYUV
-            encQ.sync { beginStreaming(sock, yuv: yuv, mirroring: mirroring) }
+            let half = yuv && hello.supportsHalfVideo
+            encQ.sync { beginStreaming(sock, yuv: yuv, halfVideo: half, mirroring: mirroring) }
 
             let started = runAsync { try await self.startCapture() }
             if !started {

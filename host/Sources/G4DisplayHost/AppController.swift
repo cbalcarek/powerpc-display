@@ -10,6 +10,7 @@ final class AppModel: ObservableObject {
     @Published var fps: Int
     @Published var mirror = false
     @Published var smoothVideo = true
+    @Published var fastVideo = true
     @Published var launchAtLogin = false
 
     init(fps: Int) { self.fps = fps }
@@ -82,8 +83,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     private static let fpsKey = "fps"
     private static let mirrorKey = "mirror"
     private static let smoothKey = "smoothVideo"
+    private static let fastKey = "fastVideo"
     static var savedMirror: Bool { UserDefaults.standard.bool(forKey: mirrorKey) }
     static var savedSmoothVideo: Bool { UserDefaults.standard.object(forKey: smoothKey) as? Bool ?? true }
+    static var savedFastVideo: Bool { UserDefaults.standard.object(forKey: fastKey) as? Bool ?? true }
     static var savedFPS: Int? {
         let v = UserDefaults.standard.integer(forKey: fpsKey)
         return v > 0 ? v : nil
@@ -97,6 +100,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         super.init()
         model.mirror = host.isMirror
         model.smoothVideo = host.smoothVideo
+        model.fastVideo = host.fastVideo
     }
 
     // MARK: - lifecycle
@@ -193,6 +197,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         model.smoothVideo = on
         host.setSmoothVideo(on)
         UserDefaults.standard.set(on, forKey: Self.smoothKey)
+    }
+
+    func setFastVideo(_ on: Bool) {
+        model.fastVideo = on
+        host.setFastVideo(on)
+        UserDefaults.standard.set(on, forKey: Self.fastKey)
     }
 
     func setFPS(_ f: Int) {
@@ -298,6 +308,12 @@ struct StatusView: View {
             Toggle("Smoother video (slightly softer colours in videos)",
                    isOn: Binding(get: { model.smoothVideo }, set: { controller.setSmoothVideo($0) }))
                 .help("Areas playing video are sent with half the data. Text and still areas stay exact.")
+
+            Toggle("Faster video (half resolution while playing)",
+                   isOn: Binding(get: { model.fastVideo }, set: { controller.setFastVideo($0) }))
+                .disabled(!model.smoothVideo)
+                .padding(.leading, 20)
+                .help("Video is sent at half width and height: a quarter of the data, for more frames per second on 100 Mbit Ethernet. It sharpens as soon as it stops moving.")
 
             if controller.isBundled {
                 Toggle("Launch at Login", isOn: Binding(get: { model.launchAtLogin },
