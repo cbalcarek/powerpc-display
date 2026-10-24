@@ -1170,6 +1170,19 @@ static void run_session(int fd)
                 }
             }
 
+            /* G3-era graphics (Rage 128, the direct-framebuffer fallback, or a
+               screen switched to 16-bit for the session): the system cursor
+               flickers or vanishes over a full-screen picture there, so
+               draw the pointer into the picture instead */
+            if (s.render && s.hw && (s.render == 2 || s.target == GL_TEXTURE_2D || mach.gen == 3)) {
+                cursor_hook(NULL, 0, 0, 0, 0);
+                if (s.hw_shown) { CGDisplayHideCursor(s.display); s.hw_shown = 0; }
+                s.hw = 0;
+                if (s.render == 1) upload_cursor(&s);
+                need_draw = 1;
+                fprintf(stderr, "drawing the pointer in the picture (this Mac's graphics flicker the system cursor)\n");
+            }
+
             if (need_draw) {
                 if (opt_test) {
                     g4dec_reset_dirty(&s.dec);
