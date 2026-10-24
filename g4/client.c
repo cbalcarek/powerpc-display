@@ -66,6 +66,8 @@ static int  opt_slots   = -1;   /* -1 = automatic (from RAM) */
 static int  opt_test    = 0;   /* -t: no OpenGL, decode only, save PNG snapshots */
 static volatile int quit_requested = 0;
 static int app_mode = 0;   /* set by the Tiger app (app.m) */
+static int opt_always_gl = 0;  /* app: use OpenGL even on Rage 128-class GPUs */
+static const char *render_name = "none";
 static int opt_hwcursor = 1;   /* app: show the pointer as the real (hardware) cursor */
 static g4c_cursor_fn cursor_hook = NULL;
 static volatile int g_paused = 0;
@@ -1155,7 +1157,22 @@ static void run_session(int fd)
                 s.gl_tried = 1;
                 /* best first: GPU, then writing the framebuffer directly
                    (faster than Apple's software OpenGL), then software GL */
-                if (gl_setup(&s, 0) == 0) {
+                int gl_ok = gl_setup(&s, 0) == 0;
+                if (gl_ok && s.target == GL_TEXTURE_2D && !opt_always_gl) {
+                    /* Rage 128-class GPU: its driver copies pictures in very
+                       slowly (~20 MB/s), so writing the screen directly is
+                       much faster. OpenGL stays the fallback. */
+                    gl_teardown(&s);
+                    if (raw_setup(&s) == 0) {
+                        s.render = 2;
+                        fprintf(stderr, "this GPU uploads slowly: drawing directly to the screen instead (Performance menu: Always Draw with OpenGL)\n");
+                    } else {
+                        gl_teardown(&s);
+                        if (gl_setup(&s, 0) == 0) { s.render = 1; upload_cursor(&s); }
+                        else { report(G4C_ERROR, "This Mac can't show the picture: no OpenGL and no usable framebuffer."); break; }
+                    }
+                    if (s.hw) hw_cursor_sync(&s);
+                } else if (gl_ok) {
                     s.render = 1;
                     upload_cursor(&s);
                     if (s.hw) hw_cursor_sync(&s);
@@ -1169,6 +1186,10 @@ static void run_session(int fd)
                     }
                 }
             }
+
+            if (s.render)
+                render_name = s.render == 2 ? "direct to screen" :
+                              s.target == GL_TEXTURE_2D ? "OpenGL (2D texture)" : "OpenGL";
 
             /* G3-era graphics (Rage 128, the direct-framebuffer fallback, or a
                screen switched to 16-bit for the session): the system cursor
@@ -1285,6 +1306,8 @@ void g4c_stop(void) { quit_requested = 1; }
 int  g4c_bonjour_stuck(void) { return bonjour_stuck; }
 void g4c_set_cursor_hook(g4c_cursor_fn fn) { cursor_hook = fn; }
 void g4c_set_hardware_cursor(int on) { opt_hwcursor = on != 0; }
+void g4c_set_always_opengl(int on) { opt_always_gl = on != 0; }
+int  g4c_always_opengl(void) { return opt_always_gl; }
 
 /* ---- performance stats (CLI -v, or the app's Performance menu) ---- */
 static pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1297,11 +1320,11 @@ static void stats_line(char *out, size_t n, double secs, double frames, double d
     if (secs <= 0) secs = 1;
     snprintf(out, n, "%.1f frames/s, %.1f draws/s, %.0f KB/s in, decode %.1f ms/frame, "
                      "GPU wait %.1f ms/frame, upload %.1f ms + %.0f KB/draw, flush %.1f ms/draw "
-                     "[AltiVec %s, hardware cursor %s]",
+                     "[AltiVec %s, hardware cursor %s, drawing %s]",
              frames / secs, draws / secs, bytes / 1024.0 / secs, decode_ms / nf, wait_ms / nf,
              upload_ms / nd, upload_kb / nd, flush_ms / nd,
              g4_yuv_simd_available() ? (g4_yuv_get_simd() ? "on" : "off") : "n/a",
-             (app_mode && cursor_hook && opt_hwcursor) ? "on" : "off");
+             (app_mode && cursor_hook && opt_hwcursor) ? "on" : "off", render_name);
 }
 
 static void set_stats_text(const char *head, const char *line)

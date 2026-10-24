@@ -291,6 +291,19 @@ Open Anyway.
   Mac nothing and never delays a frame. If it misbehaves on some machine,
   go back to the drawn pointer with **Performance › Use Hardware Cursor**
   (or `defaults write local.ppcdisplay.client hardwareCursor -bool NO`).
+  G3-era graphics (Rage 128) flicker the hardware cursor over a full-screen
+  picture, so there the pointer is always drawn into the picture.
+- G3s with a Rage 128 (no rectangle textures) draw straight into the
+  screen's memory, with the screen switched to the picture's colour depth
+  for the session: Tiger's Rage 128 OpenGL driver copies pictures in at
+  about 20 MB/s, several times slower. There's no wait for the screen
+  refresh, so fast scrolling can show a rare tear line;
+  **Performance › Always Draw with OpenGL** goes back to OpenGL (which
+  works on those GPUs too, with a power-of-two texture).
+- Scrolling is found by matching rows in 32-pixel column bands, so a
+  wallpaper edge, a sidebar, a sticky header or an overlay scrollbar next
+  to the scrolling content doesn't hide it; the page moves with one COPY
+  and only the newly revealed strip is sent.
 - On G4 and G5 the video (4:2:2) conversion uses AltiVec, 8 pixels at a
   time; tested bit-identical to the plain version over every input
   combination.

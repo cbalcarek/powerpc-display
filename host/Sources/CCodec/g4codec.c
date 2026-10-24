@@ -223,6 +223,8 @@ void g4_yuv_row(const uint8_t *in, uint8_t *out, unsigned w)
  * ==================================================================== */
 
 #define TILE        G4_TILE
+#define SCROLL_BAND 32      /* column band width for scroll matching (pixels) */
+#define SCROLL_MAXB 192     /* bands per search: screens up to 6144 pixels wide */
 #define MAX_HINTS   64
 
 typedef struct { int x, y, w, h, c0, c1, open; } mrect;
@@ -244,8 +246,9 @@ struct g4_encoder {
     uint8_t *gather; size_t gather_cap;
     uint8_t *lz;     size_t lz_cap;
 
-    uint64_t *hc, *hm;     /* row-segment hashes (current / model) */
-    uint8_t  *uc, *um;     /* row segment is a single colour       */
+    uint64_t *hc, *hm;     /* per row and column band: segment hashes (current / model) */
+    uint8_t  *uc, *um;     /* segment is a single colour                               */
+    int       nbands;      /* column bands per row (SCROLL_BAND pixels each)           */
     int32_t  *votes;       /* indexed dy + h                       */
     uint64_t *tkey;        /* row hash table for scroll matching   */
     int32_t  *tval;
@@ -323,12 +326,13 @@ g4_encoder *g4enc_create(int width, int height, int depth)
     e->model = (uint8_t *)calloc(1, fbsize);
     e->tiles = (uint8_t *)calloc((size_t)e->tw * e->th, 1);
     e->rects = (mrect *)calloc((size_t)e->tw * e->th, sizeof(mrect));
-    e->hc = (uint64_t *)calloc(height, sizeof(uint64_t));
-    e->hm = (uint64_t *)calloc(height, sizeof(uint64_t));
-    e->uc = (uint8_t *)calloc(height, 1);
-    e->um = (uint8_t *)calloc(height, 1);
+    e->nbands = (width + SCROLL_BAND - 1) / SCROLL_BAND;
+    e->hc = (uint64_t *)calloc((size_t)height * e->nbands, sizeof(uint64_t));
+    e->hm = (uint64_t *)calloc((size_t)height * e->nbands, sizeof(uint64_t));
+    e->uc = (uint8_t *)calloc((size_t)height * e->nbands, 1);
+    e->um = (uint8_t *)calloc((size_t)height * e->nbands, 1);
     e->votes = (int32_t *)calloc((size_t)2 * height + 1, sizeof(int32_t));
-    e->tcap = 1; while (e->tcap < (size_t)height * 2) e->tcap <<= 1;
+    e->tcap = 1; while (e->tcap < (size_t)height * e->nbands * 2) e->tcap <<= 1;
     e->tkey = (uint64_t *)calloc(e->tcap, sizeof(uint64_t));
     e->tval = (int32_t *)calloc(e->tcap, sizeof(int32_t));
     {
@@ -528,81 +532,145 @@ static void move_rows(uint8_t *fb, size_t stride, size_t xoff, size_t rowbytes,
  * Look for a vertical scroll inside rect R: content that sat at model row
  * y+dy now sits at current row y. On success apply the copy to the model and
  * append a COPY rect. Returns 1 if a copy was emitted.
+ *
+ * Rows are compared in column bands of SCROLL_BAND pixels, not whole: the
+ * area searched often takes in things that don't move with the page (the
+ * wallpaper or a neighbouring window at the edge of the changed area, a
+ * sidebar, an overlay scrollbar), and those would make every whole row
+ * differ. The copy covers the widest run of bands that moved together; what
+ * it gets wrong is caught by the tile diff that follows, so it stays exact.
  */
 static int detect_scroll(g4_encoder *e, int rx, int ry, int rw, int rh,
                          uint8_t **wp, int *nrects, g4_enc_stats *st)
 {
-    size_t xoff = (size_t)rx * e->bpp, seg = (size_t)rw * e->bpp;
-    int y, nonuni = 0, best_dy = 0, best_votes = 0, run0 = -1, runlen = 0, i;
+    const int NB = e->nbands;
+    int nb, y, b, i, changed = 0, best_dy = 0, best_votes = 0;
+    int b0, b1, run0 = -1, runlen = 0, best_area = 0, cx = 0, cw = 0;
     size_t mask = e->tcap - 1;
+    int good[SCROLL_MAXB], tot[SCROLL_MAXB];   /* tot: rows that stayed in place */
 
     if (rw < 64 || rh < 48) return 0;
+    nb = (rw + SCROLL_BAND - 1) / SCROLL_BAND;
+    if (nb > NB || nb > (int)(sizeof good / sizeof good[0])) return 0;
 
+#define SEG(y_, b_) ((size_t)(y_) * NB + (b_))
     for (y = ry; y < ry + rh; y++) {
-        const uint8_t *c = e->cur + (size_t)y * e->stride + xoff;
-        const uint8_t *m = e->model + (size_t)y * e->stride + xoff;
-        e->hc[y] = hash_seg(c, seg);
-        e->hm[y] = hash_seg(m, seg);
-        e->uc[y] = memcmp(c, c + e->bpp, seg - e->bpp) == 0;
-        e->um[y] = memcmp(m, m + e->bpp, seg - e->bpp) == 0;
-    }
-
-    /* table: model row hash -> first row with that hash (non-uniform rows only) */
-    for (i = 0; i < (int)e->tcap; i++) e->tval[i] = -1;
-    for (y = ry; y < ry + rh; y++) {
-        size_t k;
-        if (e->um[y]) continue;
-        k = (size_t)(e->hm[y] ^ (e->hm[y] >> 29)) & mask;
-        while (e->tval[k] >= 0 && e->tkey[k] != e->hm[y]) k = (k + 1) & mask;
-        if (e->tval[k] < 0) { e->tkey[k] = e->hm[y]; e->tval[k] = y; }
-    }
-
-    memset(e->votes + (e->h - rh), 0, sizeof(int32_t) * (size_t)(2 * rh + 1));
-    for (y = ry; y < ry + rh; y++) {
-        size_t k;
-        if (e->uc[y]) continue;
-        nonuni++;
-        k = (size_t)(e->hc[y] ^ (e->hc[y] >> 29)) & mask;
-        while (e->tval[k] >= 0) {
-            if (e->tkey[k] == e->hc[y]) { e->votes[e->h + (e->tval[k] - y)]++; break; }
-            k = (k + 1) & mask;
+        const uint8_t *c = e->cur + (size_t)y * e->stride + (size_t)rx * e->bpp;
+        const uint8_t *m = e->model + (size_t)y * e->stride + (size_t)rx * e->bpp;
+        for (b = 0; b < nb; b++) {
+            int x0 = b * SCROLL_BAND, w = rw - x0 < SCROLL_BAND ? rw - x0 : SCROLL_BAND;
+            size_t off = (size_t)x0 * e->bpp, n = (size_t)w * e->bpp, k = SEG(y, b);
+            e->hc[k] = hash_seg(c + off, n) ^ ((uint64_t)b * 0x9E3779B97F4A7C15ull);
+            e->hm[k] = hash_seg(m + off, n) ^ ((uint64_t)b * 0x9E3779B97F4A7C15ull);
+            e->uc[k] = w < 2 || memcmp(c + off, c + off + e->bpp, n - e->bpp) == 0;
+            e->um[k] = w < 2 || memcmp(m + off, m + off + e->bpp, n - e->bpp) == 0;
         }
     }
+
+    /* table: (band, model hash) -> first row with it (non-uniform segments only) */
+    for (i = 0; i < (int)e->tcap; i++) e->tval[i] = -1;
+    for (y = ry; y < ry + rh; y++)
+        for (b = 0; b < nb; b++) {
+            size_t k, s = SEG(y, b);
+            if (e->um[s]) continue;
+            k = (size_t)(e->hm[s] ^ (e->hm[s] >> 29)) & mask;
+            while (e->tval[k] >= 0 && e->tkey[k] != e->hm[s]) k = (k + 1) & mask;
+            if (e->tval[k] < 0) { e->tkey[k] = e->hm[s]; e->tval[k] = y; }
+        }
+
+    /* every changed, non-uniform segment votes for where it came from */
+    memset(e->votes + (e->h - rh), 0, sizeof(int32_t) * (size_t)(2 * rh + 1));
+    for (y = ry; y < ry + rh; y++)
+        for (b = 0; b < nb; b++) {
+            size_t k, s = SEG(y, b);
+            if (e->uc[s] || e->hc[s] == e->hm[s]) continue;     /* blank, or unchanged in place */
+            changed++;
+            k = (size_t)(e->hc[s] ^ (e->hc[s] >> 29)) & mask;
+            while (e->tval[k] >= 0) {
+                if (e->tkey[k] == e->hc[s]) { e->votes[e->h + (e->tval[k] - y)]++; break; }
+                k = (k + 1) & mask;
+            }
+        }
     for (i = -rh + 1; i < rh; i++) {
         if (i == 0) continue;
         if (e->votes[e->h + i] > best_votes) { best_votes = e->votes[e->h + i]; best_dy = i; }
     }
-    if (best_dy == 0 || best_votes < 4 || best_votes * 4 < nonuni ||
-        best_votes <= e->votes[e->h]) return 0;
+    if (best_dy == 0 || best_votes < 8 || best_votes * 4 < changed) return 0;
 
-    /* longest contiguous run of rows that match at best_dy */
-    {
-        int cur0 = -1, curlen = 0;
+    /* Which bands moved by best_dy: rows that match there (good) against
+       rows that stayed put instead (stat: wallpaper, a sidebar, another
+       window). Rows that match neither (new content scrolling in) don't
+       count either way. */
+    for (b = 0; b < nb; b++) {
+        good[b] = tot[b] = 0;
         for (y = ry; y < ry + rh; y++) {
             int sy = y + best_dy;
-            int ok = sy >= ry && sy < ry + rh && e->hc[y] == e->hm[sy];
-            if (ok) {
-                if (cur0 < 0) { cur0 = y; curlen = 0; }
-                curlen++;
-                if (curlen > runlen) { runlen = curlen; run0 = cur0; }
-            } else cur0 = -1;
+            size_t s = SEG(y, b);
+            if (e->uc[s]) continue;
+            if (sy >= ry && sy < ry + rh && e->hc[s] == e->hm[SEG(sy, b)]) good[b]++;
+            else if (e->hc[s] == e->hm[s]) tot[b]++;
         }
     }
-    if (runlen < 16) return 0;
 
-    /* emit COPY, apply to model */
+    /* The core: the run of bands that clearly moved (more rows matching at
+       best_dy than staying put) with the most matching rows. Then the
+       longest run of rows where all of it matches, trimming up to two edge
+       bands (a scrollbar) when that gives a bigger copy. */
     {
+        int c0 = -1, c1 = -1, bestgood = 0, lo, hi;
+        for (b0 = 0; b0 < nb; ) {
+            int sum = 0;
+            if (good[b0] <= tot[b0]) { b0++; continue; }
+            for (b1 = b0; b1 < nb && good[b1] > tot[b1]; b1++) sum += good[b1];
+            if (sum > bestgood) { bestgood = sum; c0 = b0; c1 = b1; }
+            b0 = b1;
+        }
+        if (c0 < 0) return 0;
+        for (lo = c0; lo < c1 && lo <= c0 + 2; lo++)
+            for (hi = c1; hi > lo && hi >= c1 - 2; hi--) {
+                int cur0 = -1, curlen = 0, r0 = -1, rl = 0, area;
+                for (y = ry; y < ry + rh; y++) {
+                    int sy = y + best_dy, ok = sy >= ry && sy < ry + rh;
+                    for (b = lo; ok && b < hi; b++) ok = e->hc[SEG(y, b)] == e->hm[SEG(sy, b)];
+                    if (ok) {
+                        if (cur0 < 0) { cur0 = y; curlen = 0; }
+                        if (++curlen > rl) { rl = curlen; r0 = cur0; }
+                    } else cur0 = -1;
+                }
+                area = rl * (hi - lo);
+                if (rl >= 16 && area > best_area) { best_area = area; run0 = r0; runlen = rl; cx = lo; cw = hi - lo; }
+            }
+        if (best_area == 0) return 0;
+        /* widen over neighbouring bands that match on every row of the run
+           (blank margins, sparse text, more of the same page) */
+        for (;;) {
+            int grew = 0, side;
+            for (side = 0; side < 2; side++) {
+                int nbnd = side ? cx + cw : cx - 1, ok = nbnd >= 0 && nbnd < nb;
+                for (y = run0; ok && y < run0 + runlen; y++)
+                    ok = e->hc[SEG(y, nbnd)] == e->hm[SEG(y + best_dy, nbnd)];
+                if (ok) { if (side) cw++; else { cx--; cw++; } grew = 1; }
+            }
+            if (!grew) break;
+        }
+    }
+#undef SEG
+    if (best_area == 0 || cw * SCROLL_BAND < 64) return 0;
+    {
+        int x = rx + cx * SCROLL_BAND;
+        int w = cx * SCROLL_BAND + cw * SCROLL_BAND > rw ? rw - cx * SCROLL_BAND : cw * SCROLL_BAND;
+        size_t xoff = (size_t)x * e->bpp, seg = (size_t)w * e->bpp;
         size_t pos = (size_t)(*wp - e->out);
         uint8_t *p;
         if (ensure(&e->out, &e->out_cap, pos + 14)) return 0;   /* may move e->out */
         p = e->out + pos;
         p[0] = G4_RECT_COPY; p[1] = 0;
-        g4_put16(p + 2, (uint32_t)rx);  g4_put16(p + 4, (uint32_t)run0);
-        g4_put16(p + 6, (uint32_t)rw);  g4_put16(p + 8, (uint32_t)runlen);
-        g4_put16(p + 10, (uint32_t)rx); g4_put16(p + 12, (uint32_t)(run0 + best_dy));
+        g4_put16(p + 2, (uint32_t)x);  g4_put16(p + 4, (uint32_t)run0);
+        g4_put16(p + 6, (uint32_t)w);  g4_put16(p + 8, (uint32_t)runlen);
+        g4_put16(p + 10, (uint32_t)x); g4_put16(p + 12, (uint32_t)(run0 + best_dy));
         *wp = p + 14;
+        move_rows(e->model, e->stride, xoff, seg, run0 + best_dy, run0, runlen);
     }
-    move_rows(e->model, e->stride, xoff, seg, run0 + best_dy, run0, runlen);
     memset(e->lossy, 0, (size_t)e->tw * e->th);   /* lossy pixels moved: compare exactly from now on */
     (*nrects)++;
     if (st) { st->copies++; st->rects++; st->scroll_dy = best_dy; }

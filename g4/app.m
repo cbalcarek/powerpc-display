@@ -134,6 +134,7 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     [perfMenu addItem:[NSMenuItem separatorItem]];
     [[perfMenu addItemWithTitle:@"Use Hardware Cursor (from next connection)" action:@selector(toggleHardwareCursor:) keyEquivalent:@""] setTarget:self];
     [[perfMenu addItemWithTitle:@"Use AltiVec for Video" action:@selector(toggleAltivec:) keyEquivalent:@""] setTarget:self];
+    [[perfMenu addItemWithTitle:@"Always Draw with OpenGL (from next connection)" action:@selector(toggleAlwaysGL:) keyEquivalent:@""] setTarget:self];
     [perfItem setSubmenu:perfMenu];
 
     [winMenu addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
@@ -265,6 +266,7 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     g4c_set_cursor_hook(cursor_hook);
     if ([ud objectForKey:@"altivec"]) g4_yuv_set_simd([ud boolForKey:@"altivec"]);
     if ([ud boolForKey:@"showStats"]) g4c_set_verbose(1);
+    g4c_set_always_opengl([ud boolForKey:@"alwaysOpenGL"]);
     [self updateStats:nil];
     [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(updateStats:) userInfo:nil repeats:YES];
     [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(keepCursor:) userInfo:nil repeats:YES];
@@ -442,11 +444,22 @@ static NSString *log_path(void)
     fprintf(stderr, "AltiVec video conversion %s\n", on ? "on" : "off");
 }
 
+/* G3s with a Rage 128 draw straight to the screen (much faster than its
+   OpenGL driver, but no wait for the screen refresh, so a rare tear line) */
+- (void)toggleAlwaysGL:(id)sender
+{
+    BOOL on = !g4c_always_opengl();
+    g4c_set_always_opengl(on);
+    [[NSUserDefaults standardUserDefaults] setBool:on forKey:@"alwaysOpenGL"];
+    fprintf(stderr, "always draw with OpenGL %s (from the next connection)\n", on ? "on" : "off");
+}
+
 - (BOOL)validateMenuItem:(NSMenuItem *)item
 {
     SEL a = [item action];
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     if (a == @selector(toggleStats:)) [item setState:(g4c_verbose() ? NSOnState : NSOffState)];
+    if (a == @selector(toggleAlwaysGL:)) [item setState:(g4c_always_opengl() ? NSOnState : NSOffState)];
     if (a == @selector(toggleHardwareCursor:))
         [item setState:(([ud objectForKey:@"hardwareCursor"] ? [ud boolForKey:@"hardwareCursor"] : YES) ? NSOnState : NSOffState)];
     if (a == @selector(toggleAltivec:)) {

@@ -86,6 +86,24 @@ static void render(int scroll)
         draw_line(l, WY + l * LINE_H - scroll, WY, WY + WH);
 }
 
+/* a browser-like page: render() plus a sticky header that doesn't scroll
+   and an overlay scrollbar whose thumb moves with the page (macOS shows it
+   while scrolling) — both change every row's right edge / top band */
+#define HDR_H 44
+#define SB_W 12
+static void render_browser(int scroll)
+{
+    int x, y, ty;
+    render(scroll);
+    for (y = WY; y < WY + HDR_H; y++) for (x = WX; x < WX + WW; x++)
+        px(x, y, 246, 246, 246);
+    draw_line(7, WY + 14, WY, WY + HDR_H);                  /* header title text */
+    ty = WY + HDR_H + (scroll / 6) % (WH - HDR_H - 120);
+    for (y = WY + HDR_H; y < WY + WH; y++) for (x = WX + WW - SB_W - 2; x < WX + WW - 2; x++)
+        if (y >= ty && y < ty + 120) px(x, y, 120, 120, 120);
+        else px(x, y, 60, 60, 62);
+}
+
 static void photo(int x0, int y0, int w, int h)
 {
     int x, y;
@@ -118,7 +136,7 @@ static int run(int depth, int slots)
     g4_decoder d;
     uint32_t fid = 0;
     int scroll = 0, i, fails = 0, si = 0;
-    scen sc[12];
+    scen sc[20];
     memset(sc, 0, sizeof sc);
     g4dec_init(&d, fb, W, H, depth);
     g4dec_enable_cache(&d, slots);
@@ -131,7 +149,9 @@ static int run(int depth, int slots)
         clock_t t0; int rc;                                                       \
         g4enc_ingest_bgra(e, bgra, W * 4);                                        \
         clk += clk_step; g4enc_set_time(e, clk);                                  \
-        if (hint) g4enc_add_hint(e, WX, WY, WW, WH);                              \
+        if (hint == 1) g4enc_add_hint(e, WX, WY, WW, WH);                         \
+        if (hint == 2) { g4enc_add_hint(e, WX, WY + HDR_H, WW - SB_W - 2, WH - HDR_H); \
+                         g4enc_add_hint(e, WX + WW - SB_W - 2, WY, SB_W + 2, WH); }    \
         n = g4enc_encode(e, ++fid, &msg, &st);                                    \
         if (n) {                                                                  \
             t0 = clock();                                                         \
@@ -172,6 +192,26 @@ static int run(int depth, int slots)
     sc[si].name = "scroll up 2 lines+hint";
     for (i = 0; i < 20; i++) { scroll -= 2 * LINE_H; render(scroll); STEP(1); }
     si++;
+
+    sc[si].name = "browser 40px + hint";
+    for (i = 0; i < 30; i++) { scroll += 40; render_browser(scroll); STEP(1); }
+    si++;
+
+    sc[si].name = "browser 40px split hints";
+    for (i = 0; i < 30; i++) { scroll += 40; render_browser(scroll); STEP(2); }
+    si++;
+
+    sc[si].name = "browser 40px no hint";
+    for (i = 0; i < 30; i++) { scroll += 40; render_browser(scroll); STEP(0); }
+    si++;
+
+    sc[si].name = "browser inertia + hint";
+    {
+        static const int dys[] = { 90, 70, 52, 38, 27, 19, 13, 9, 6, 4, 3, 2, 1, 1 };
+        for (i = 0; i < (int)(sizeof dys / sizeof dys[0]); i++) { scroll += dys[i]; render_browser(scroll); STEP(1); }
+    }
+    si++;
+    render(scroll); STEP(0);
 
     sc[si].name = "video 400x300 @30fps";
     clk_step = 33;
