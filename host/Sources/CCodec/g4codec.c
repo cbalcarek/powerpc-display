@@ -325,7 +325,8 @@ struct g4_encoder {
     uint8_t  *plz;       size_t plz_cap;      /* ...LZ4-compressed    */
     uint8_t  *hrows;     /* two half-res rows for g4_yuvh_paint */
     size_t    hrows_cap;
-    uint8_t  *tfast;       /* per tile: changed again within YUV_FAST_MS */
+    uint8_t  *tfast;       /* per tile: treat as video (see track_video) */
+    uint8_t  *tstreak;     /* per tile: changes in a row at video rate */
     uint8_t  *lossy;
     uint64_t *lhash;
     uint32_t *llast;
@@ -340,6 +341,7 @@ struct g4_encoder {
 #define YUV_FAST_MS     250   /* changed again this soon: treat as video   */
 #define YUV_REFRESH_MS  300   /* still this long: resend losslessly        */
 #define YUV_MIN_TILES   4     /* smaller animations stay lossless          */
+#define YUV_STREAK      3     /* changes in a row at video rate before a tile counts as video */
 
 #define TILE_BYTES(e) ((size_t)TILE * TILE * (e)->bpp)
 
@@ -397,6 +399,7 @@ g4_encoder *g4enc_create(int width, int height, int depth)
         e->tlast = (uint32_t *)calloc(nt, sizeof(uint32_t));
         e->tvol = (uint8_t *)calloc(nt, 1);
         e->tfast = (uint8_t *)calloc(nt, 1);
+        e->tstreak = (uint8_t *)calloc(nt, 1);
         e->lossy = (uint8_t *)calloc(nt, 1);
         e->lhash = (uint64_t *)calloc(nt, sizeof(uint64_t));
         e->llast = (uint32_t *)calloc(nt, sizeof(uint32_t));
@@ -409,7 +412,7 @@ g4_encoder *g4enc_create(int width, int height, int depth)
     if (!e->cur || !e->model || !e->tiles || !e->rects || !e->hc || !e->hm ||
         !e->uc || !e->um || !e->votes || !e->tkey || !e->tval ||
         !e->mkey || !e->mpos || !e->vkey || !e->vcnt || !e->hist || !e->tlast || !e->tvol ||
-        !e->tfast || !e->lossy || !e->lhash || !e->llast || !e->refresh || !e->vmask || !e->dmask) {
+        !e->tfast || !e->tstreak || !e->lossy || !e->lhash || !e->llast || !e->refresh || !e->vmask || !e->dmask) {
         g4enc_destroy(e);
         return NULL;
     }
@@ -428,7 +431,7 @@ void g4enc_destroy(g4_encoder *e)
     free(e->mkey); free(e->mpos); free(e->vkey); free(e->vcnt); free(e->hist);
     free(e->cpx); free(e->chash); free(e->cvalid); free(e->cref); free(e->ctab);
     free(e->thash); free(e->tstate); free(e->tlast); free(e->tvol);
-    free(e->tfast); free(e->lossy); free(e->lhash); free(e->llast); free(e->refresh); free(e->vmask); free(e->dmask);
+    free(e->tfast); free(e->tstreak); free(e->lossy); free(e->lhash); free(e->llast); free(e->refresh); free(e->vmask); free(e->dmask);
     free(e);
 }
 
@@ -955,17 +958,29 @@ static int diff_tiles(g4_encoder *e)
 
 /* how recently each changed tile changed before: video-rate tiles aren't
    cached (they'd churn the cache) and may be sent as 4:2:2 */
-static void track_video(g4_encoder *e)
+/* Which tiles are video. A tile counts only if it keeps changing at video
+   rate (YUV_STREAK times in a row), the frame isn't a scroll or a dragged
+   window (moved content and the strip scrolling in change every frame but
+   aren't video), and it has the many colours of a picture: text and
+   interface stay sharp however fast they change. */
+static int tile_few_colours(const g4_encoder *e, int t);
+
+static void track_video(g4_encoder *e, int moved)
 {
     int i, n = e->tw * e->th;
     for (i = 0; i < n; i++) {
         uint32_t dt;
+        int fast;
         if (!e->tiles[i]) continue;
-        if (e->refresh[i]) { e->tvol[i] = 0; e->tfast[i] = 0; continue; }   /* not a real change */
+        if (e->refresh[i]) { e->tvol[i] = 0; e->tfast[i] = 0; e->tstreak[i] = 0; continue; }   /* not a real change */
         dt = (uint32_t)(e->now_ms - e->tlast[i]);
         e->tvol[i] = e->clock_set && e->tlast[i] && dt < 100;
-        e->tfast[i] = e->clock_set && e->tlast[i] && dt < YUV_FAST_MS;
+        fast = e->clock_set && e->tlast[i] && dt < YUV_FAST_MS;
         if (e->clock_set) e->tlast[i] = e->now_ms ? e->now_ms : 1;
+        if (!fast || moved) { e->tstreak[i] = 0; e->tfast[i] = 0; continue; }
+        if (e->tstreak[i] < 255) e->tstreak[i]++;
+        /* once video, a tile stays video while it keeps changing (no recount) */
+        e->tfast[i] = e->tstreak[i] >= YUV_STREAK && (e->tfast[i] || !tile_few_colours(e, i));
     }
 }
 
@@ -1410,7 +1425,7 @@ static int yuv_pass(g4_encoder *e, uint8_t **wp, int *nrects, int *changed, g4_e
 size_t g4enc_encode(g4_encoder *e, uint32_t frame_id, const uint8_t **out, g4_enc_stats *st)
 {
     uint8_t *wp;
-    int nrects = 0, nr, i, changed;
+    int nrects = 0, nr, i, changed, moved = 0;
 
     if (st) memset(st, 0, sizeof *st);
     if (ensure(&e->out, &e->out_cap, 64)) return 0;
@@ -1444,16 +1459,19 @@ size_t g4enc_encode(g4_encoder *e, uint32_t frame_id, const uint8_t **out, g4_en
                 int bw = ((x1 + 1) * TILE > e->w ? e->w : (x1 + 1) * TILE) - bx;
                 int bh = ((y1 + 1) * TILE > e->h ? e->h : (y1 + 1) * TILE) - by;
                 if (detect_scroll(e, bx, by, bw, bh, &wp, &nrects, st) ||
-                    detect_move(e, bx, by, bw, bh, &wp, &nrects, st))      /* dragged window, sideways scroll */
+                    detect_move(e, bx, by, bw, bh, &wp, &nrects, st)) {    /* dragged window, sideways scroll */
                     changed = diff_tiles(e);
+                    copied = 1;
+                }
             }
         }
     }
     e->nhints = 0;
+    moved = nrects > 0;      /* only COPY rects exist yet: the screen scrolled or a window moved */
     /* everything ingested so far has now been compared */
     memset(e->dmask, 0, (size_t)e->tw * e->th);
     e->all_dirty = 0;
-    track_video(e);
+    track_video(e, moved);
 
     {
         int changed_total = changed;

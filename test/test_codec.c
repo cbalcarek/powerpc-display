@@ -469,6 +469,36 @@ static int run_rects(int depth, int yuv)
     return fails;
 }
 
+/* fast scrolling (60 fps) and window dragging with video modes on must
+   stay lossless: they change every frame but aren't video */
+static int scroll_not_video(void)
+{
+    g4_encoder *e = g4enc_create(W, H, 32);
+    uint8_t *fb = (uint8_t *)calloc((size_t)W * H, 4);
+    g4_decoder d;
+    uint32_t fid = 0, t = 1000, yuvs = 0;
+    int i, fails = 0, scroll = 0;
+    g4dec_init(&d, fb, W, H, 32);
+    g4enc_set_yuv(e, 1); g4enc_set_yuv_half(e, 1); g4enc_set_palette(e, 1);
+    for (i = 0; i < NLINES; i++) lineseed[i] = (uint32_t)i * 7919u + 17;
+    for (i = 0; i < 90; i++) {
+        const uint8_t *msg; size_t n; g4_enc_stats st;
+        if (i < 30) { scroll += 23; render_browser(scroll); }              /* scroll, hint below */
+        else if (i < 60) { scroll += 11; render_browser(scroll); }         /* scroll, no hint */
+        else render_window(100 + (i - 60) * 19, 120 + (i - 60) * 7, 0);   /* drag */
+        g4enc_ingest_bgra(e, bgra, W * 4);
+        t += 16; g4enc_set_time(e, t);
+        if (i < 30) g4enc_add_hint(e, WX, WY, WW, WH);
+        n = g4enc_encode(e, ++fid, &msg, &st);
+        yuvs += st.yuvs;
+        if (n && g4dec_frame(&d, msg + G4_HDR_SIZE, n - G4_HDR_SIZE, NULL)) { printf("scroll/video: decode error\n"); fails++; }
+        if (memcmp(fb, g4enc_current(e), (size_t)W * H * 4)) { printf("scroll/video: frame %d not exact\n", i); fails++; break; }
+    }
+    printf("fast scroll + drag with video modes on: %u video rects (want 0), %s\n", yuvs, yuvs || fails ? "FAILED" : "ok");
+    g4dec_free(&d); free(fb); g4enc_destroy(e);
+    return fails + (yuvs != 0);
+}
+
 static int run_yuv(void)
 {
     int fails = 0, k;
@@ -478,6 +508,7 @@ static int run_yuv(void)
         g4_yuv_from_pair(a, a, o); g4_yuv_to_pair(o, r0, r1);
         if (abs(r0[1] - k) > 1 || abs(r0[2] - k) > 1 || abs(r0[3] - k) > 1) { printf("yuv grey %d -> %d,%d,%d\n", k, r0[1], r0[2], r0[3]); fails++; break; }
     }
+    fails += scroll_not_video();
     fails += one_yuv(W, H, 1, 0);
     fails += one_yuv(W, H, 0, 0);
     fails += one_yuv(101, 67, 1, 0);     /* odd width: last pixel paired with itself */
