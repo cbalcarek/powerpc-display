@@ -37,7 +37,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         var verbose = false
         var mirror = false                     // show the main display instead of a new one
         var smoothVideo = true                 // video regions as 4:2:2 (half the data, softer)
-        var fastVideo = true                   // ...and at half resolution (a quarter of that)
+        var fastVideo = true                   // adapt video quality to what the network carries
     }
 
     enum Status: Equatable {
@@ -53,6 +53,8 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     struct Stats {
         var fps = 0.0, kbps = 0.0, latencyMs = 0.0, compression = 0.0
         var at = 0.0                            // nowMs() when measured
+        var videoQuality: String?               // while video plays: "sharp", "smooth" or "half"
+
     }
 
     let cfg: Config
@@ -125,7 +127,13 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     // --- stats (encQ) ---
     var statT0 = nowMs()
     var statFrames = 0, statBytes = 0, statRaw = 0, statBlocked = 0, statCopies = 0, statHits = 0
-    var statYuv = 0, statRefresh = 0, statPal = 0
+    var statYuv = 0, statRefresh = 0, statPal = 0, statVideo = 0
+    // adaptive video quality (encQ): 0 lossless, 1 4:2:2, 2 4:2:2 at half resolution
+    var videoLevel = 1
+    var linkRate = 0.0                          // bytes/s the link carried while full (0 = unknown)
+    var calmMs = 0.0                            // video playing without the link being full
+    var upWaitMs = 4000.0                       // how long to wait before trying better quality
+    var lastUpAt = 0.0
     var statRtt = 0.0, statRttN = 0
 
     init(config: Config) {
@@ -178,21 +186,21 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     func setSmoothVideo(_ on: Bool) {
         lock.lock(); _smoothVideo = on; lock.unlock()
         encQ.async {
-            guard let e = self.enc else { return }
-            g4enc_set_yuv(e, on && self.clientYUV ? 1 : 0)
+            guard self.enc != nil else { return }
+            self.applyVideoLevel()
             self.pending = true      // re-encode so video tiles become exact if turned off
             self.trySend()
         }
     }
 
-    /// With Smoother Video: send video regions at half width and height too
-    /// (a quarter of the data, softer while playing). Applies immediately;
-    /// PowerPC apps older than 0.11 just keep getting full resolution.
+    /// With Smoother Video: adjust the quality of video to what the network
+    /// carries (see adaptVideo). Off: always 4:2:2 at full resolution.
     func setFastVideo(_ on: Bool) {
         lock.lock(); _fastVideo = on; lock.unlock()
         encQ.async {
-            guard let e = self.enc else { return }
-            g4enc_set_yuv_half(e, on && self.clientHalfVideo ? 1 : 0)
+            guard self.enc != nil else { return }
+            if !on { self.videoLevel = 1 }
+            self.applyVideoLevel()
         }
     }
 

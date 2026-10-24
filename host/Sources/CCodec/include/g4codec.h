@@ -157,6 +157,7 @@ typedef struct {
     uint32_t wire_bytes;     /* size of the FRAME message           */
     int32_t  scroll_dy;      /* last detected scroll (0 = none)     */
     uint32_t pals;           /* rects sent as palette + indices     */
+    uint32_t video_tiles;    /* changed tiles that are video (sent as 4:2:2 or not) */
 } g4_enc_stats;
 
 g4_encoder *g4enc_create(int width, int height, int depth);

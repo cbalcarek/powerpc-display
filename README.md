@@ -357,13 +357,17 @@ Open Anyway.
 - Only the 16-row bands that changed are uploaded to the graphics card, so
   a change at the top and one at the bottom of the screen don't upload
   everything in between.
-- **Faster Video** (on by default, with Smoother Video): video regions are
-  sent at half width and height as well, a quarter of the data. The PowerPC
-  Mac doubles them back up, averaging the in-between pixels; both Macs use
-  the same code for that, so the Apple Silicon Mac always knows exactly what
-  is on screen and sharpens it to lossless once the video stops. An iMac G4
-  on 100 Mbit Ethernet tops out around 7.5 MB/s, so this is what lifts video
-  from ~20 to 30+ fps. PowerPC apps older than 0.11 just get full resolution.
+- **Match video quality to the network** (on by default, with Smoother
+  Video): while video plays, the Apple Silicon Mac sends it as sharp as the
+  link allows. It starts with 4:2:2; when frames back up (the network or the
+  PowerPC Mac can't keep up) it drops to half width and height (a quarter of
+  the data, which the PowerPC Mac doubles back up, averaging in-between
+  pixels), and after a calm while it tries a step better, up to lossless,
+  if the measured link rate leaves room. A step up that didn't fit makes it
+  wait longer before trying again. Only areas with the many colours of a
+  picture that keep changing (not a scroll or a moving window) count as
+  video, so text never gets softer. The current level shows under the stats
+  ("sharp", "smooth", "half").
 - Video regions use 4:2:2 YCbCr (Apple lists YCbCr 4:2:2 among the optimal
   texture formats). It's converted to RGB on the PowerPC CPU with integer
   maths identical on both Macs, so the Apple Silicon Mac's model of the

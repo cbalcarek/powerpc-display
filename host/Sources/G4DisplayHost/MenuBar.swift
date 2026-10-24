@@ -58,11 +58,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         sv.toolTip = "Areas playing video are sent with half the data (slightly softer colours)."
         menu.addItem(sv)
         // greyed out (no action) unless Smoother Video is on
-        let fv = model.smoothVideo ? action("Faster Video (Half Resolution)", #selector(toggleFast))
-                                   : info("Faster Video (Half Resolution)")
+        let fv = model.smoothVideo ? action("Match Video Quality to Network", #selector(toggleFast))
+                                   : info("Match Video Quality to Network")
         fv.state = model.fastVideo ? .on : .off
         fv.indentationLevel = 1
-        fv.toolTip = "Video is sent at half width and height: a quarter of the data. It sharpens as soon as it stops moving."
+        fv.toolTip = "Video is sent as sharp as the connection allows: lossless, softer colour, or half resolution."
         menu.addItem(fv)
 
         let fpsItem = NSMenuItem(title: "Frame Rate", action: nil, keyEquivalent: "")

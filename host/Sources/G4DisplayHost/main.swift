@@ -18,7 +18,7 @@ func usage() -> Never {
       --mirror          mirror the main display instead of adding one
       --extend          add a display (default, unless Mirror was chosen in the app)
       --sharp-video     send video regions losslessly (turns off Smoother Video)
-      --full-res-video  send video at full resolution (turns off Faster Video)
+      --full-res-video  don't adapt video quality (always 4:2:2, full resolution)
       -v                print throughput / latency stats every 5 s
       --list            list displays and exit
     """)

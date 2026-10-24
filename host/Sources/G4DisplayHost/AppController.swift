@@ -348,11 +348,11 @@ struct StatusView: View {
                    isOn: Binding(get: { model.smoothVideo }, set: { controller.setSmoothVideo($0) }))
                 .help("Areas playing video are sent with half the data. Text and still areas stay exact.")
 
-            Toggle("Faster video (half resolution while playing)",
+            Toggle("Match video quality to the network",
                    isOn: Binding(get: { model.fastVideo }, set: { controller.setFastVideo($0) }))
                 .disabled(!model.smoothVideo)
                 .padding(.leading, 20)
-                .help("Video is sent at half width and height: a quarter of the data, for more frames per second on 100 Mbit Ethernet. It sharpens as soon as it stops moving.")
+                .help("Video is sent as sharp as the connection allows: lossless when there's room, softer colour, or half resolution when the network or the PowerPC Mac can't keep up. Off: always softer colour, full resolution.")
 
             if controller.isBundled {
                 Toggle("Launch at Login", isOn: Binding(get: { model.launchAtLogin },
@@ -418,6 +418,7 @@ struct PeerRow: View {
                                 stat(String(format: "%.0f", s.fps), "fps")
                                 stat(String(format: "%.0f", s.kbps), "KB/s")
                                 stat(String(format: "%.0f", s.latencyMs), "ms to screen")
+                                if let q = s.videoQuality { stat(q, "video") }
                             }
                             .padding(.leading, 54)
                         } else {

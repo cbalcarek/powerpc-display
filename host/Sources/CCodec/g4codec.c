@@ -1472,6 +1472,10 @@ size_t g4enc_encode(g4_encoder *e, uint32_t frame_id, const uint8_t **out, g4_en
     memset(e->dmask, 0, (size_t)e->tw * e->th);
     e->all_dirty = 0;
     track_video(e, moved);
+    if (st) {
+        int t, nt = e->tw * e->th;
+        for (t = 0; t < nt; t++) st->video_tiles += e->tiles[t] && e->tfast[t];
+    }
 
     {
         int changed_total = changed;
