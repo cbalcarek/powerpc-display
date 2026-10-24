@@ -34,6 +34,7 @@ final class HostGroup {
     private var single: Bool { base.g4Address != nil || base.g4Name != nil || base.fixedDisplayID != nil }
 
     func start() {
+        startBrightnessSync()
         if single { add(name: base.g4Name); return }
         var known = UserDefaults.standard.stringArray(forKey: Self.knownKey) ?? []
         // 0.10 and earlier remembered one PowerPC Mac
@@ -106,5 +107,20 @@ final class HostGroup {
         hosts.forEach { $0.dropConnection() }
     }
     func macWillSleep(_ why: String) { hosts.forEach { $0.macWillSleep(why) } }
+
+    /// Every half second: the PowerPC Macs follow this Mac's brightness.
+    private var brightnessTimer: Timer?
+    private(set) var matchBrightness = true
+    func setMatchBrightness(_ on: Bool) {
+        matchBrightness = on
+        if !on { hosts.forEach { h in h.encQ.async { h.sendBrightness(0xFFFF) } } }   // their own again
+    }
+    func startBrightnessSync() {
+        brightnessTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self, self.matchBrightness, let b = Brightness.current() else { return }
+            let level = Int((b * 1000).rounded())
+            self.hosts.forEach { h in h.encQ.async { h.sendBrightness(level) } }
+        }
+    }
     func macDidWake(_ why: String) { hosts.forEach { $0.macDidWake(why) } }
 }

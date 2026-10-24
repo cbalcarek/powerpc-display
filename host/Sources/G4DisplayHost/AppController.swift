@@ -78,6 +78,7 @@ final class AppModel: ObservableObject {
     @Published var mirror = false
     @Published var smoothVideo = true
     @Published var fastVideo = true
+    @Published var matchBrightness = true
     @Published var launchAtLogin = false
 
     init(fps: Int) { self.fps = fps }
@@ -106,6 +107,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private static let mirrorKey = "mirror"
     private static let smoothKey = "smoothVideo"
     private static let fastKey = "fastVideo"
+    private static let brightKey = "matchBrightness"
     static var savedMirror: Bool { UserDefaults.standard.bool(forKey: mirrorKey) }
     static var savedSmoothVideo: Bool { UserDefaults.standard.object(forKey: smoothKey) as? Bool ?? true }
     static var savedFastVideo: Bool { UserDefaults.standard.object(forKey: fastKey) as? Bool ?? true }
@@ -123,6 +125,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         model.mirror = hosts.isMirror
         model.smoothVideo = hosts.smoothVideo
         model.fastVideo = hosts.fastVideo
+        let mb = UserDefaults.standard.object(forKey: Self.brightKey) as? Bool ?? true
+        model.matchBrightness = mb
+        hosts.setMatchBrightness(mb)
     }
 
     // MARK: - lifecycle
@@ -260,6 +265,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(on, forKey: Self.fastKey)
     }
 
+    func setMatchBrightness(_ on: Bool) {
+        model.matchBrightness = on
+        hosts.setMatchBrightness(on)
+        UserDefaults.standard.set(on, forKey: Self.brightKey)
+    }
+
     func setFPS(_ f: Int) {
         model.fps = f
         hosts.setFPS(f)
@@ -353,6 +364,10 @@ struct StatusView: View {
                 .disabled(!model.smoothVideo)
                 .padding(.leading, 20)
                 .help("Video is sent as sharp as the connection allows: lossless when there's room, softer colour, or half resolution when the network or the PowerPC Mac can't keep up. Off: always softer colour, full resolution.")
+
+            Toggle("Match this Mac's brightness",
+                   isOn: Binding(get: { model.matchBrightness }, set: { controller.setMatchBrightness($0) }))
+                .help("PowerPC Macs with a built-in screen (iMac, iBook, PowerBook) follow this Mac's brightness while they show it, and go back to their own afterwards.")
 
             if controller.isBundled {
                 Toggle("Launch at Login", isOn: Binding(get: { model.launchAtLogin },

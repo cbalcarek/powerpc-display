@@ -26,10 +26,10 @@ if [ "$OLD_REQ" != "$NEW_REQ" ]; then
     echo
 fi
 # where the releases folder is: the app offers PowerPC Macs the newest
-# releases/PowerPC-Display-Tiger.zip (the Tiger build sends it there)
+# releases/PowerPC-Display-PPC.zip (the Tiger build sends it there)
 defaults write local.ppcdisplay.host releasesDir "$(cd .. && pwd)/releases"
 open "/Applications/PowerPC Display.app"
 mkdir -p ../releases
-ditto -c -k --keepParent "/Applications/PowerPC Display.app" ../releases/PowerPC-Display-Mac.zip &&
-    echo "Saved releases/PowerPC-Display-Mac.zip (for GitHub releases)."
+ditto -c -k --keepParent "/Applications/PowerPC Display.app" ../releases/PowerPC-Display-M1.zip &&
+    echo "Saved releases/PowerPC-Display-M1.zip (for GitHub releases)."
 echo "Installed and opened /Applications/PowerPC Display.app - you can close this window."

@@ -64,6 +64,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         fv.indentationLevel = 1
         fv.toolTip = "Video is sent as sharp as the connection allows: lossless, softer colour, or half resolution."
         menu.addItem(fv)
+        let br = action("Match Brightness", #selector(toggleBrightness))
+        br.state = model.matchBrightness ? .on : .off
+        menu.addItem(br)
 
         let fpsItem = NSMenuItem(title: "Frame Rate", action: nil, keyEquivalent: "")
         let fpsMenu = NSMenu()
@@ -102,6 +105,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func setMirror() { controller.setMirror(true) }
     @objc private func toggleSmooth() { controller.setSmoothVideo(!model.smoothVideo) }
     @objc private func toggleFast() { controller.setFastVideo(!model.fastVideo) }
+    @objc private func toggleBrightness() { controller.setMatchBrightness(!model.matchBrightness) }
     @objc private func forgetPairings() { controller.forgetPairings() }
     @objc private func checkUpdates() { controller.checkForUpdates() }
     @objc private func quit() { NSApp.terminate(nil) }

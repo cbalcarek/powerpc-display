@@ -59,6 +59,7 @@
 #ifdef __APPLE__
 #include <net/if_dl.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
+#include <IOKit/graphics/IOGraphicsLib.h>
 #endif
 #include <sys/sysctl.h>
 #include <sys/stat.h>
@@ -295,9 +296,12 @@ typedef struct {
        no wait for the display refresh, so frames never queue behind it */
     int hw, hw_shown;
     int host_sleeping;         /* the other Mac said it's going to sleep */
+    float own_brightness;      /* this screen's brightness before the other Mac set it (<0: untouched) */
 } session;
 
 static int  update_offer(session *s, const uint8_t *p, uint32_t len);
+static void brightness_msg(session *s, const uint8_t *p, uint32_t len);
+static void set_brightness(CGDirectDisplayID d, float v);
 static void update_data(session *s, const uint8_t *p, uint32_t len);
 
 /* Call fn for each run of consecutive changed bands (rows y0..y1). Only the
@@ -853,6 +857,9 @@ static int handle_message(session *s, int *need_draw, uint32_t *frame_to_ack)
     case G4_MSG_UPDATE_DATA:
         update_data(s, s->msg, len);
         break;
+    case G4_MSG_BRIGHTNESS:
+        brightness_msg(s, s->msg, len);
+        break;
     case G4_MSG_SLEEP:
         s->host_sleeping = 1;
         return -1;                  /* end the session; see sleep_with_host() */
@@ -1083,6 +1090,7 @@ static void run_session(int fd)
     double last_keys = 0, last_awake = 0;
 
     memset(&s, 0, sizeof s);
+    s.own_brightness = -1;
     s.fd = fd;
     s.display = CGMainDisplayID();
     s.W = (int)CGDisplayPixelsWide(s.display);
@@ -1315,6 +1323,7 @@ static void run_session(int fd)
         fprintf(stderr, "%s%s\n", head, line);
         set_stats_text(head, line);
     }
+    if (s.own_brightness >= 0) set_brightness(s.display, s.own_brightness);   /* our own again */
     if (s.gl_tried) gl_teardown(&s);
     if (s.hw) cursor_hook(NULL, 0, 0, 0, 0);       /* back to the normal arrow */
     free(s.cur_px);
@@ -1386,6 +1395,48 @@ static int local_mac(int fd, uint8_t mac[6])
     (void)fd; (void)mac;
     return -1;
 #endif
+}
+
+/* Brightness of this Mac's screen (built-in screens and Apple's flat
+   panels; others just don't change). 0..1; -1 if it can't be read. */
+static float get_brightness(CGDirectDisplayID d)
+{
+#ifdef __APPLE__
+    float v = -1;
+    io_service_t svc = CGDisplayIOServicePort(d);
+    if (svc && IODisplayGetFloatParameter(svc, kNilOptions, CFSTR(kIODisplayBrightnessKey), &v) == kIOReturnSuccess) return v;
+#endif
+    (void)d;
+    return -1;
+}
+
+static void set_brightness(CGDirectDisplayID d, float v)
+{
+#ifdef __APPLE__
+    io_service_t svc = CGDisplayIOServicePort(d);
+    if (svc) IODisplaySetFloatParameter(svc, kNilOptions, CFSTR(kIODisplayBrightnessKey), v);
+#endif
+    (void)d; (void)v;
+}
+
+/* the other Mac's brightness, to match it (0xFFFF: back to our own) */
+static void brightness_msg(session *s, const uint8_t *p, uint32_t len)
+{
+    unsigned v;
+    if (len < 2) return;
+    v = g4_get16(p);
+    if (v == 0xFFFF) {
+        if (s->own_brightness >= 0) set_brightness(s->display, s->own_brightness);
+        s->own_brightness = -1;
+        return;
+    }
+    if (v > 1000) v = 1000;
+    if (s->own_brightness < 0) {
+        s->own_brightness = get_brightness(s->display);
+        if (s->own_brightness < 0) return;            /* this screen has no brightness control */
+        fprintf(stderr, "matching your Mac's brightness (this screen was at %.0f%%)\n", s->own_brightness * 100);
+    }
+    set_brightness(s->display, v < 20 ? 0.02f : (float)v / 1000.0f);   /* never fully dark */
 }
 
 /* The other Mac went to sleep while we were showing it: sleep too. Its
@@ -1471,7 +1522,7 @@ static void update_data(session *s, const uint8_t *p, uint32_t len)
         }
         snprintf(dir, sizeof dir, "%s/Library/Application Support/PowerPC Display", home);
         mkdir(dir, 0700);
-        snprintf(path, sizeof path, "%s/PowerPC-Display-Tiger-%s.zip", dir, s->upd_version);
+        snprintf(path, sizeof path, "%s/PowerPC-Display-PPC-%s.zip", dir, s->upd_version);
         f = fopen(path, "wb");
         if (!f || fwrite(s->upd, 1, s->upd_size, f) != s->upd_size) {
             fprintf(stderr, "couldn't save the update to %s\n", path);

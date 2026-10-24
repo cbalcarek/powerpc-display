@@ -208,6 +208,15 @@ last address even when Bonjour isn't answering. **Remove** (shown while one
 isn't connected) stops looking for it, e.g. an old VM; it comes back if it
 appears on the network again.
 
+## Brightness
+
+**Match this Mac's brightness** (on by default): PowerPC Macs with a
+built-in screen (iMac G4, iBook, PowerBook; Apple's flat panels too)
+follow the Apple Silicon Mac's brightness while they show it, and go back
+to their own when you disconnect. The Apple Silicon side reads its
+brightness with macOS's DisplayServices, which isn't public: if a future
+macOS changes it, brightness matching simply stops.
+
 ## Updates
 
 - **Apple Silicon Mac:** **Check for Updates…** (app menu or menu bar
@@ -268,8 +277,8 @@ reconnects by itself. Turn the whole thing off on the PowerPC Mac with
 Each build also saves a zip for GitHub releases in `releases/` (not part of
 the source):
 
-- **Build Mac App.command** → `releases/PowerPC-Display-Mac.zip`
-- **Build PowerPC Display.command** on Tiger → `PowerPC-Display-Tiger.zip`,
+- **Build Mac App.command** → `releases/PowerPC-Display-M1.zip`
+- **Build PowerPC Display.command** on Tiger → `PowerPC-Display-PPC.zip`,
   sent automatically to `releases/` on the Apple Silicon Mac when
   **Share with PowerPC Mac.command** is running there. Builds from the UTM
   disc know where to send it (the disc lists the Mac's addresses); builds

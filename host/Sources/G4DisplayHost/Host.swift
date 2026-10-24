@@ -89,6 +89,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var clientSleeps = false                   // ...and sleeps when told to (0.11+)
     var peerVersion = ""                       // its app version (0.11+ tell us)
     var offered: TigerUpdate.Package?          // the update we offered it
+    var sentBrightness = -1                    // brightness last sent (-1: none this connection)
     var refreshScheduled = false
     var sentID: UInt32 = 0
     var ackedID: UInt32 = 0

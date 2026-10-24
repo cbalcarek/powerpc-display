@@ -13,9 +13,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/PowerPCDisplay"
 [ -f ../icon/AppIcon.icns ] && cp ../icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 # the PowerPC app built in the VM, so PowerPC Macs can update from this Mac
-if [ -f ../releases/PowerPC-Display-Tiger.zip ]; then
-    cp ../releases/PowerPC-Display-Tiger.zip "$APP/Contents/Resources/"
-    echo "Included releases/PowerPC-Display-Tiger.zip (PowerPC Macs will be offered it)."
+if [ -f ../releases/PowerPC-Display-PPC.zip ]; then
+    cp ../releases/PowerPC-Display-PPC.zip "$APP/Contents/Resources/"
+    echo "Included releases/PowerPC-Display-PPC.zip (PowerPC Macs will be offered it)."
 fi
 
 # macOS 26 frames app icons in grey unless they come from Xcode's Icon

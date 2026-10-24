@@ -127,8 +127,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key>           <string>AppIcon</string>
     <key>CFBundlePackageType</key>        <string>APPL</string>
     <key>CFBundleSignature</key>          <string>????</string>
-    <key>CFBundleShortVersionString</key> <string>0.11</string>
-    <key>CFBundleVersion</key>            <string>11</string>
+    <key>CFBundleShortVersionString</key> <string>0.12</string>
+    <key>CFBundleVersion</key>            <string>12</string>
     <key>NSPrincipalClass</key>           <string>NSApplication</string>
     <key>LSMinimumSystemVersion</key>     <string>10.4</string>
 </dict>
@@ -147,7 +147,7 @@ if [ -d "/Applications/G4 Display.app" ]; then
 fi
 
 # zip for a GitHub release, and hand it to the Apple Silicon Mac if we know where it is
-ZIP="PowerPC-Display-Tiger.zip"
+ZIP="PowerPC-Display-PPC.zip"
 rm -f "$ZIP"
 if ditto -c -k --keepParent "$APP" "$ZIP" 2>/dev/null; then
     # where the Apple Silicon Mac might be: remembered by update.sh, else the

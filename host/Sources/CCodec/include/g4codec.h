@@ -47,7 +47,8 @@ enum {
     G4_MSG_INFO         = 12, /* client -> host: its app version, ASCII ("0.12") */
     G4_MSG_UPDATE_OFFER = 13, /* host -> client: u32 size, 64-byte SHA-512, version */
     G4_MSG_UPDATE_REQ   = 14, /* client -> host: send it (no payload)            */
-    G4_MSG_UPDATE_DATA  = 15  /* host -> client: u32 offset, then bytes          */
+    G4_MSG_UPDATE_DATA  = 15, /* host -> client: u32 offset, then bytes          */
+    G4_MSG_BRIGHTNESS   = 16  /* host -> client: u16 0..1000, or 0xFFFF = back to its own (0.12+) */
 };
 
 /* AUTH_FAIL reasons */

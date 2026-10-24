@@ -18,7 +18,7 @@ extension Host {
         applyVideoLevel()
         sentID = 0; ackedID = 0; pending = false
         sendTimes.removeAll()
-        peerVersion = ""; offered = nil
+        peerVersion = ""; offered = nil; sentBrightness = -1
         rttAvg = 0; paced = false
         needFullIngest = true
         lastHeard = nowMs()

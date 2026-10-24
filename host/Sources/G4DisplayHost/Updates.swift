@@ -25,12 +25,12 @@ enum TigerUpdate {
         try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         return d
     }
-    static var downloadedZip: URL { supportDir.appendingPathComponent("PowerPC-Display-Tiger.zip") }
-    static var bundledZip: URL? { Bundle.main.url(forResource: "PowerPC-Display-Tiger", withExtension: "zip") }
+    static var downloadedZip: URL { supportDir.appendingPathComponent("PowerPC-Display-PPC.zip") }
+    static var bundledZip: URL? { Bundle.main.url(forResource: "PowerPC-Display-PPC", withExtension: "zip") }
     /// releases/ in the project folder (set by Build Mac App.command)
     static var releasesZip: URL? {
         guard let d = UserDefaults.standard.string(forKey: "releasesDir") else { return nil }
-        return URL(fileURLWithPath: d).appendingPathComponent("PowerPC-Display-Tiger.zip")
+        return URL(fileURLWithPath: d).appendingPathComponent("PowerPC-Display-PPC.zip")
     }
 
     private static let lock = NSLock()
