@@ -220,6 +220,18 @@ The Apple Silicon Mac pings every second. If either side hears nothing for
 4 seconds it disconnects: the PowerPC Mac goes back to its own desktop, and
 the Apple Silicon Mac waits and reconnects when it's back.
 
+## Sleeping and waking with your Mac
+
+When the Apple Silicon Mac goes to sleep, or its displays do, it tells the
+PowerPC Mac, which gives its screen back and goes to sleep too. On wake the
+Apple Silicon Mac sends it a Wake-on-LAN packet and reconnects; the windows
+on the PowerPC screen stay where they were. For the wake-up, turn on
+**System Preferences › Energy Saver › Options › Wake for Ethernet network
+administrator access** on the PowerPC Mac (the app reminds you once). Not
+every G3 has that option; then wake it with its keyboard or mouse and it
+reconnects by itself. Turn the whole thing off on the PowerPC Mac with
+**PowerPC Display › Sleep When Your Mac Sleeps**.
+
 ## Logs
 
 - Apple Silicon Mac: Console.app, search for `local.ppcdisplay.host` (or

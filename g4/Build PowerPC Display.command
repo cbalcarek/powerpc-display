@@ -39,7 +39,7 @@ case "$THIS_CPU" in
 esac
 
 COMMON="-O3 -fomit-frame-pointer -Wall -I$CODEC/include"
-LIBS="-framework OpenGL -framework ApplicationServices -framework Carbon"
+LIBS="-framework OpenGL -framework ApplicationServices -framework Carbon -framework IOKit"
 TMP="/tmp/ppcdisplay-build.$$"
 rm -rf "$TMP"; mkdir -p "$TMP" || exit 1
 

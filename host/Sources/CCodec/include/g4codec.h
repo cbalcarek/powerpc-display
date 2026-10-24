@@ -40,7 +40,9 @@ enum {
     G4_MSG_PONG         = 7,
     G4_MSG_AUTH         = 8,  /* host -> client, right after HELLO      */
     G4_MSG_AUTH_OK      = 9,  /* client -> host                         */
-    G4_MSG_AUTH_FAIL    = 10  /* client -> host: u32 reason             */
+    G4_MSG_AUTH_FAIL    = 10, /* client -> host: u32 reason             */
+    G4_MSG_SLEEP        = 11  /* host -> client: I'm going to sleep (no payload);
+                                 sleep too if set to, and expect Wake-on-LAN */
 };
 
 /* AUTH_FAIL reasons */
@@ -80,6 +82,9 @@ enum {
 #define G4_HELLO_FLAG_YUV   0x01   /* client can decode G4_RECT_YUV */
 #define G4_HELLO_FLAG_AUTH  0x02   /* HELLO v2: client id, nonce and key follow; AUTH required */
 #define G4_HELLO_FLAG_YUVH  0x04   /* client can decode G4_RECT_YUVH (half-resolution video) */
+#define G4_HELLO_FLAG_SLEEP 0x08   /* client sleeps on G4_MSG_SLEEP; HELLO is 6 bytes longer:
+                                      its Ethernet address (for Wake-on-LAN) at offset 80 */
+#define G4_HELLO_MAC_LEN    (G4_HELLO_V2_LEN + 6)
 
 /* tile cache: 32x32 tiles the client keeps so content it has seen before
    (menus closing, switching apps back, caret blink) costs 12 bytes */

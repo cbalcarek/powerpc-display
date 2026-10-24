@@ -13,6 +13,9 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <sys/socket.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <unistd.h>
 
 #define MAX_CANDS 8
 
@@ -217,4 +220,48 @@ int g4_discover(const char *name_filter, int timeout_ms, g4_found *out)
     if (first_fail.name[0]) *out = first_fail;
     else out->failed_step = 1;      /* every candidate said goodbye */
     return -1;
+}
+
+/* ---------- Wake-on-LAN ---------- */
+
+int g4_wake_on_lan(const uint8_t mac[6])
+{
+    uint8_t pkt[102];
+    struct ifaddrs *ifs, *i;
+    int sent = 0, k;
+    memset(pkt, 0xFF, 6);
+    for (k = 0; k < 16; k++) memcpy(pkt + 6 + 6 * k, mac, 6);
+    if (getifaddrs(&ifs) != 0) return 0;
+    for (i = ifs; i; i = i->ifa_next) {
+        int s, one = 1, p;
+        static const uint16_t ports[2] = { 9, 7 };
+        if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET) continue;
+        if (!(i->ifa_flags & IFF_UP) || (i->ifa_flags & IFF_LOOPBACK) || !(i->ifa_flags & IFF_BROADCAST)) continue;
+        s = socket(AF_INET, SOCK_DGRAM, 0);
+        if (s < 0) continue;
+        setsockopt(s, SOL_SOCKET, SO_BROADCAST, &one, sizeof one);
+#ifdef IP_BOUND_IF
+        {
+            unsigned idx = if_nametoindex(i->ifa_name);
+            if (idx) setsockopt(s, IPPROTO_IP, IP_BOUND_IF, &idx, sizeof idx);   /* out of this interface */
+        }
+#endif
+        for (p = 0; p < 2; p++) {
+            struct sockaddr_in to;
+            memset(&to, 0, sizeof to);
+            to.sin_family = AF_INET;
+            to.sin_port = htons(ports[p]);
+            /* the interface's own broadcast address (e.g. 169.254.255.255 on a
+               direct cable), and the all-ones broadcast */
+            if (i->ifa_broadaddr && i->ifa_broadaddr->sa_family == AF_INET) {
+                to.sin_addr = ((struct sockaddr_in *)i->ifa_broadaddr)->sin_addr;
+                if (sendto(s, pkt, sizeof pkt, 0, (struct sockaddr *)&to, sizeof to) == (ssize_t)sizeof pkt && p == 0) sent++;
+            }
+            to.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+            (void)sendto(s, pkt, sizeof pkt, 0, (struct sockaddr *)&to, sizeof to);
+        }
+        close(s);
+    }
+    freeifaddrs(ifs);
+    return sent;
 }

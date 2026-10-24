@@ -31,6 +31,14 @@ typedef struct {
  */
 int g4_discover(const char *name_filter, int timeout_ms, g4_found *out);
 
+/*
+ * Send a Wake-on-LAN "magic packet" for this Ethernet address out of every
+ * network interface that's up (broadcast, UDP ports 9 and 7), so it reaches
+ * a PowerPC Mac on a direct cable as well as one on the home network.
+ * Returns how many interfaces it was sent on.
+ */
+int g4_wake_on_lan(const uint8_t mac[6]);
+
 #ifdef __cplusplus
 }
 #endif

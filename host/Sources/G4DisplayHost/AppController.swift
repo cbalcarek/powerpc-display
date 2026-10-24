@@ -122,6 +122,21 @@ final class AppController: NSObject, NSApplicationDelegate {
         showWindow()
         if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
         host.start()
+
+        // sleep and wake with this Mac (and its displays)
+        let ws = NSWorkspace.shared.notificationCenter
+        ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.host.macWillSleep("this Mac is going to sleep")
+        }
+        ws.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.host.macWillSleep("the displays went to sleep")
+        }
+        ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.host.macDidWake("this Mac woke up")
+        }
+        ws.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.host.macDidWake("the displays woke up")
+        }
         log("PowerPC Display running — status window open, menu bar icon added")
     }
 

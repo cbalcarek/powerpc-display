@@ -9,6 +9,7 @@ struct Hello {
     var clientID: [UInt8] = []          // 16 bytes, stable per PowerPC Mac
     var nonce: [UInt8] = []             // 16 bytes, fresh per connection
     var publicKey: [UInt8] = []         // 32 bytes, used only when pairing
+    var mac: [UInt8] = []               // its Ethernet address, if it sleeps with this Mac (0.11+)
 
     var supportsAuth: Bool { flags & Int(G4_HELLO_FLAG_AUTH) != 0 && clientID.count == 16 }
     var supportsYUV: Bool { flags & Int(G4_HELLO_FLAG_YUV) != 0 }
@@ -103,6 +104,9 @@ extension Host {
             h.clientID = Array(p[16..<32])
             h.nonce = Array(p[32..<48])
             h.publicKey = Array(p[48..<80])
+        }
+        if h.flags & Int(G4_HELLO_FLAG_SLEEP) != 0, p.count >= Int(G4_HELLO_MAC_LEN) {
+            h.mac = Array(p[80..<86])
         }
         guard h.width > 0, h.height > 0, h.depth == 16 || h.depth == 32 else { return nil }
         return h

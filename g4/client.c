@@ -54,6 +54,12 @@
 #include <string.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#ifdef __APPLE__
+#include <net/if_dl.h>
+#include <IOKit/pwr_mgt/IOPMLib.h>
+#endif
 #include <sys/sysctl.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -66,6 +72,7 @@ static int  opt_slots   = -1;   /* -1 = automatic (from RAM) */
 static int  opt_test    = 0;   /* -t: no OpenGL, decode only, save PNG snapshots */
 static volatile int quit_requested = 0;
 static int app_mode = 0;   /* set by the Tiger app (app.m) */
+static int opt_sleep_with_host = 1;   /* sleep when the other Mac does */
 static int opt_always_gl = 0;  /* app: use OpenGL even on Rage 128-class GPUs */
 static const char *render_name = "none";
 static int opt_hwcursor = 1;   /* app: show the pointer as the real (hardware) cursor */
@@ -75,6 +82,8 @@ static void report(int state, const char *text);
 static void stats_line(char *out, size_t n, double secs, double frames, double draws, double bytes,
                        double decode_ms, double wait_ms, double upload_ms, double upload_kb, double flush_ms);
 static void set_stats_text(const char *head, const char *line);
+static int local_mac(int fd, uint8_t mac[6]);
+static void sleep_with_host(void);
 
 /* ------------------------------------------------------------------ */
 
@@ -280,6 +289,7 @@ typedef struct {
     /* hardware cursor (app): moving the pointer is one call, no redraw and
        no wait for the display refresh, so frames never queue behind it */
     int hw, hw_shown;
+    int host_sleeping;         /* the other Mac said it's going to sleep */
 } session;
 
 /* Call fn for each run of consecutive changed bands (rows y0..y1). Only the
@@ -829,6 +839,9 @@ static int handle_message(session *s, int *need_draw, uint32_t *frame_to_ack)
             hw_cursor_sync(s);
         } else *need_draw = 1;
         break;
+    case G4_MSG_SLEEP:
+        s->host_sleeping = 1;
+        return -1;                  /* end the session; see sleep_with_host() */
     case G4_MSG_PING:
         s->got_ping = 1;
         if (len >= 4 && send_u32_msg(s->fd, G4_MSG_PONG, g4_get32(s->msg))) return -1;
@@ -1048,7 +1061,8 @@ static int authenticate(int fd, const uint8_t *nc, const uint8_t *cpub, const ui
 static void run_session(int fd)
 {
     session s;
-    uint8_t hello[G4_HDR_SIZE + G4_HELLO_V2_LEN];
+    uint8_t hello[G4_HDR_SIZE + G4_HELLO_MAC_LEN];
+    size_t hello_len = G4_HELLO_V2_LEN;
     uint8_t nonce[G4_NONCE_BYTES], cpub[G4_PUB_BYTES], cpriv[G4_PUB_BYTES];
     int one = 1, buf = 1 << 20;
     struct timeval sndto = { 3, 0 };
@@ -1075,7 +1089,11 @@ static void run_session(int fd)
         return;
     }
 
-    g4_put_header(hello, G4_MSG_HELLO, G4_HELLO_V2_LEN);
+    memset(hello, 0, sizeof hello);
+    /* our Ethernet address, for waking us after we sleep with the other Mac */
+    if (opt_sleep_with_host && local_mac(fd, hello + G4_HDR_SIZE + G4_HELLO_V2_LEN) == 0)
+        hello_len = G4_HELLO_MAC_LEN;
+    g4_put_header(hello, G4_MSG_HELLO, (uint32_t)hello_len);
     memcpy(hello + G4_HDR_SIZE, "G4DP", 4);
     g4_put16(hello + G4_HDR_SIZE + 4, G4_PROTO_VERSION);
     g4_put16(hello + G4_HDR_SIZE + 6, (uint32_t)s.W);
@@ -1083,7 +1101,8 @@ static void run_session(int fd)
     hello[G4_HDR_SIZE + 10] = (uint8_t)s.depth;
     /* 4:2:2 video regions: decoded on the CPU into the normal framebuffer,
        so every drawing path supports them (32-bit only) */
-    hello[G4_HDR_SIZE + 11] = (uint8_t)((s.depth == 32 ? G4_HELLO_FLAG_YUV | G4_HELLO_FLAG_YUVH : 0) | G4_HELLO_FLAG_AUTH);
+    hello[G4_HDR_SIZE + 11] = (uint8_t)((s.depth == 32 ? G4_HELLO_FLAG_YUV | G4_HELLO_FLAG_YUVH : 0) | G4_HELLO_FLAG_AUTH |
+                                        (hello_len == G4_HELLO_MAC_LEN ? G4_HELLO_FLAG_SLEEP : 0));
     memcpy(hello + G4_HDR_SIZE + 16, my_id, G4_ID_BYTES);
     memcpy(hello + G4_HDR_SIZE + 32, nonce, G4_NONCE_BYTES);
     memcpy(hello + G4_HDR_SIZE + 48, cpub, G4_PUB_BYTES);
@@ -1104,7 +1123,7 @@ static void run_session(int fd)
         unsigned wmm = (mm.width > 0 && mm.width < 65535) ? (unsigned)(mm.width + 0.5) : 0;
         g4_put16(hello + G4_HDR_SIZE + 14, wmm);
     }
-    if (write_full(fd, hello, sizeof hello) || authenticate(fd, nonce, cpub, cpriv)) {
+    if (write_full(fd, hello, G4_HDR_SIZE + hello_len) || authenticate(fd, nonce, cpub, cpriv)) {
         memset(cpriv, 0, sizeof cpriv);
         g4dec_free(&s.dec); free(s.fb);
         return;
@@ -1282,6 +1301,11 @@ static void run_session(int fd)
     free(s.fb);
     free(s.msg);
     fprintf(stderr, "host disconnected\n");
+    if (s.host_sleeping) {
+        /* only if we were showing the other Mac: nobody is using this one */
+        if (opt_sleep_with_host && !opt_test && s.gl_tried) sleep_with_host();
+        else report(G4C_WAITING, "Your Mac went to sleep.");
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1308,6 +1332,63 @@ void g4c_set_cursor_hook(g4c_cursor_fn fn) { cursor_hook = fn; }
 void g4c_set_hardware_cursor(int on) { opt_hwcursor = on != 0; }
 void g4c_set_always_opengl(int on) { opt_always_gl = on != 0; }
 int  g4c_always_opengl(void) { return opt_always_gl; }
+
+/* Ethernet address of the interface this connection came in on, so the
+   other Mac can wake us with Wake-on-LAN after we sleep. -1 if unknown. */
+static int local_mac(int fd, uint8_t mac[6])
+{
+#ifdef AF_LINK
+    struct sockaddr_in sa;
+    socklen_t n = sizeof sa;
+    struct ifaddrs *ifs, *i;
+    char name[IFNAMSIZ];
+    int rc = -1;
+    if (getsockname(fd, (struct sockaddr *)&sa, &n) || sa.sin_family != AF_INET) return -1;
+    if (getifaddrs(&ifs)) return -1;
+    name[0] = 0;
+    for (i = ifs; i; i = i->ifa_next)
+        if (i->ifa_addr && i->ifa_addr->sa_family == AF_INET &&
+            ((struct sockaddr_in *)i->ifa_addr)->sin_addr.s_addr == sa.sin_addr.s_addr) {
+            strncpy(name, i->ifa_name, sizeof name - 1); name[sizeof name - 1] = 0;
+            break;
+        }
+    for (i = ifs; name[0] && i; i = i->ifa_next)
+        if (i->ifa_addr && i->ifa_addr->sa_family == AF_LINK && !strcmp(i->ifa_name, name)) {
+            struct sockaddr_dl *dl = (struct sockaddr_dl *)i->ifa_addr;
+            if (dl->sdl_alen == 6) { memcpy(mac, LLADDR(dl), 6); rc = 0; }
+            break;
+        }
+    freeifaddrs(ifs);
+    return rc;
+#else
+    (void)fd; (void)mac;
+    return -1;
+#endif
+}
+
+/* The other Mac went to sleep while we were showing it: sleep too. Its
+   app wakes us with Wake-on-LAN ("Wake for Ethernet network administrator
+   access" in Energy Saver) and reconnects. */
+static void sleep_with_host(void)
+{
+    fprintf(stderr, "your Mac is going to sleep: sleeping this Mac too\n");
+    report(G4C_WAITING, "Your Mac went to sleep, so this Mac is sleeping too. It wakes when your Mac does.");
+    sleep(2);                                   /* let the screen come back and the log flush */
+#ifdef __APPLE__
+    {
+        io_connect_t pm = IOPMFindPowerManagement(MACH_PORT_NULL);
+        if (pm) {
+            IOReturn r = IOPMSleepSystem(pm);
+            IOServiceClose(pm);
+            if (r == kIOReturnSuccess) return;
+            fprintf(stderr, "couldn't sleep (IOPMSleepSystem error 0x%x)\n", (unsigned)r);
+        }
+    }
+#endif
+}
+
+void g4c_set_sleep_with_host(int on) { opt_sleep_with_host = on != 0; }
+int  g4c_sleep_with_host(void) { return opt_sleep_with_host; }
 
 /* ---- performance stats (CLI -v, or the app's Performance menu) ---- */
 static pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;

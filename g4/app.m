@@ -35,6 +35,19 @@ static int delayed_ack_value(void)
 }
 static BOOL network_tuned(void) { int v = delayed_ack_value(); return v == 2 || v == 0; }
 
+/* Energy Saver's "Wake for Ethernet network administrator access" (pmset womp) */
+static BOOL wake_on_lan_enabled(void)
+{
+    FILE *p = popen("/usr/bin/pmset -g 2>/dev/null", "r");
+    char line[256];
+    BOOL on = NO;
+    if (!p) return YES;                          /* can't tell: don't nag */
+    while (fgets(line, sizeof line, p))
+        if (strstr(line, "womp") && strchr(line, '1')) on = YES;
+    pclose(p);
+    return on;
+}
+
 @interface G4AppDelegate : NSObject
 {
     NSWindow    *window;
@@ -54,6 +67,7 @@ static BOOL network_tuned(void) { int v = delayed_ack_value(); return v == 2 || 
 }
 - (void)showStatus:(NSDictionary *)info;
 - (void)updateNetButton;
+- (void)explainWakeOnLAN;
 - (void)setRemoteCursor:(NSDictionary *)info;
 @end
 
@@ -122,6 +136,7 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
 
     [appMenu addItemWithTitle:@"About PowerPC Display" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
     [appMenu addItem:[NSMenuItem separatorItem]];
+    [[appMenu addItemWithTitle:@"Sleep When Your Mac Sleeps" action:@selector(toggleSleepWithHost:) keyEquivalent:@""] setTarget:self];
     [[appMenu addItemWithTitle:@"Forget Paired Macs..." action:@selector(forgetPairings:) keyEquivalent:@""] setTarget:self];
     [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:@"Hide PowerPC Display" action:@selector(hide:) keyEquivalent:@"h"];
@@ -267,6 +282,12 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     if ([ud objectForKey:@"altivec"]) g4_yuv_set_simd([ud boolForKey:@"altivec"]);
     if ([ud boolForKey:@"showStats"]) g4c_set_verbose(1);
     g4c_set_always_opengl([ud boolForKey:@"alwaysOpenGL"]);
+    g4c_set_sleep_with_host([ud objectForKey:@"sleepWithHost"] ? [ud boolForKey:@"sleepWithHost"] : YES);
+    /* once: point out Energy Saver's Wake for Ethernet, needed to wake back up */
+    if (g4c_sleep_with_host() && ![ud boolForKey:@"wakeHintShown"] && !wake_on_lan_enabled()) {
+        [ud setBool:YES forKey:@"wakeHintShown"];
+        [self performSelector:@selector(explainWakeOnLAN) withObject:nil afterDelay:1.0];
+    }
     [self updateStats:nil];
     [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(updateStats:) userInfo:nil repeats:YES];
     [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(keepCursor:) userInfo:nil repeats:YES];
@@ -444,6 +465,26 @@ static NSString *log_path(void)
     fprintf(stderr, "AltiVec video conversion %s\n", on ? "on" : "off");
 }
 
+/* sleep when the other Mac sleeps; it wakes this one with Wake-on-LAN */
+- (void)toggleSleepWithHost:(id)sender
+{
+    BOOL on = !g4c_sleep_with_host();
+    g4c_set_sleep_with_host(on);
+    [[NSUserDefaults standardUserDefaults] setBool:on forKey:@"sleepWithHost"];
+    if (on && !wake_on_lan_enabled()) [self explainWakeOnLAN];
+}
+
+- (void)explainWakeOnLAN
+{
+    NSAlert *a = [[[NSAlert alloc] init] autorelease];
+    [a setMessageText:@"Turn on Wake for Ethernet"];
+    [a setInformativeText:@"So your Mac can wake this one again, open System Preferences > Energy Saver > Options and turn on \"Wake for Ethernet network administrator access\". Some older Macs don't offer it; then wake this Mac with its keyboard or mouse."];
+    [a addButtonWithTitle:@"Open Energy Saver"];
+    [a addButtonWithTitle:@"Later"];
+    if ([a runModal] == NSAlertFirstButtonReturn)
+        [[NSWorkspace sharedWorkspace] openFile:@"/System/Library/PreferencePanes/EnergySaver.prefPane"];
+}
+
 /* G3s with a Rage 128 draw straight to the screen (much faster than its
    OpenGL driver, but no wait for the screen refresh, so a rare tear line) */
 - (void)toggleAlwaysGL:(id)sender
@@ -460,6 +501,7 @@ static NSString *log_path(void)
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     if (a == @selector(toggleStats:)) [item setState:(g4c_verbose() ? NSOnState : NSOffState)];
     if (a == @selector(toggleAlwaysGL:)) [item setState:(g4c_always_opengl() ? NSOnState : NSOffState)];
+    if (a == @selector(toggleSleepWithHost:)) [item setState:(g4c_sleep_with_host() ? NSOnState : NSOffState)];
     if (a == @selector(toggleHardwareCursor:))
         [item setState:(([ud objectForKey:@"hardwareCursor"] ? [ud boolForKey:@"hardwareCursor"] : YES) ? NSOnState : NSOffState)];
     if (a == @selector(toggleAltivec:)) {

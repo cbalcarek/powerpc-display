@@ -69,6 +69,8 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var _mirror: Bool
     var _smoothVideo: Bool
     var _fastVideo: Bool
+    var _asleep = false                        // this Mac (or its screens) went to sleep
+    var _peerSleeping = false                  // ...and we told the PowerPC Mac to sleep too
     var _stream: SCStream?
     var _scConfig: SCStreamConfiguration?
     let wake = DispatchSemaphore(value: 0)
@@ -80,6 +82,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var enc: OpaquePointer?
     var clientYUV = false                      // the connected client can decode 4:2:2 rects
     var clientHalfVideo = false                // ...and half-resolution ones (0.11+)
+    var clientSleeps = false                   // ...and sleeps when told to (0.11+)
     var refreshScheduled = false
     var sentID: UInt32 = 0
     var ackedID: UInt32 = 0
@@ -223,13 +226,19 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
                 while !isEnabled { _ = wake.wait(timeout: .now() + 1) }
                 announced = false
             }
+            if isAsleep {
+                // keep the virtual display (and the windows on it) while asleep
+                while isAsleep { _ = wake.wait(timeout: .now() + 1) }
+                announced = false
+                continue
+            }
             guard let conn = connectToG4(announced: &announced) else {
                 sleep(cfg.g4Address == nil ? 1 : 2)
                 continue
             }
             let (sock, name) = conn
             peerName = name
-            if !isEnabled { close(sock); continue }
+            if !isEnabled || isAsleep { close(sock); continue }
             announced = false
 
             guard let hello = readHello(sock) else {
@@ -260,7 +269,11 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
             }
             let yuv = hello.depth == 32 && hello.supportsYUV
             let half = yuv && hello.supportsHalfVideo
-            encQ.sync { beginStreaming(sock, yuv: yuv, halfVideo: half, mirroring: mirroring) }
+            if hello.mac.count == 6 { rememberMAC(hello.mac) }
+            encQ.sync {
+                clientSleeps = hello.mac.count == 6
+                beginStreaming(sock, yuv: yuv, halfVideo: half, mirroring: mirroring)
+            }
 
             let started = runAsync { try await self.startCapture() }
             if !started {
