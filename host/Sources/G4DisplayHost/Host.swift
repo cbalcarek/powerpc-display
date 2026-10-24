@@ -118,7 +118,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     // --- stats (encQ) ---
     var statT0 = nowMs()
     var statFrames = 0, statBytes = 0, statRaw = 0, statBlocked = 0, statCopies = 0, statHits = 0
-    var statYuv = 0, statRefresh = 0
+    var statYuv = 0, statRefresh = 0, statPal = 0
     var statRtt = 0.0, statRttN = 0
 
     init(config: Config) {
@@ -273,6 +273,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
             encQ.sync {
                 clientSleeps = hello.mac.count == 6
                 beginStreaming(sock, yuv: yuv, halfVideo: half, mirroring: mirroring)
+                if let e = enc { g4enc_set_palette(e, hello.supportsPalette ? 1 : 0) }
             }
 
             let started = runAsync { try await self.startCapture() }

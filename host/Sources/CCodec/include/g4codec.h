@@ -71,6 +71,12 @@ enum {
                            pixels as Cb,Y0,Cr,Y1 (an odd last pixel is paired
                            with itself). depth 32 only; both sides turn it back
                            into RGB with the same integer maths (g4_yuv_*). */
+    ,G4_RECT_PAL  = 9   /* u8 bits (1, 2, 4 or 8), u8 colours-1, the colours
+                           (bpp bytes each, as in RAW), u32 clen, then per row
+                           ceil(w*bits/8) bytes of colour indices, high bits
+                           first: LZ4 block (clen > 0) or raw (clen == 0).
+                           Text and interface areas use few colours. Only
+                           when the client set G4_HELLO_FLAG_PAL. */
     ,G4_RECT_YUVH = 8   /* + u32 clen, then a half-resolution 4:2:2 picture of
                            the rect, ((w+1)/2) x ((h+1)/2), laid out like
                            G4_RECT_YUV. The client doubles it back to w x h
@@ -82,6 +88,7 @@ enum {
 #define G4_HELLO_FLAG_YUV   0x01   /* client can decode G4_RECT_YUV */
 #define G4_HELLO_FLAG_AUTH  0x02   /* HELLO v2: client id, nonce and key follow; AUTH required */
 #define G4_HELLO_FLAG_YUVH  0x04   /* client can decode G4_RECT_YUVH (half-resolution video) */
+#define G4_HELLO_FLAG_PAL   0x10   /* client can decode G4_RECT_PAL */
 #define G4_HELLO_FLAG_SLEEP 0x08   /* client sleeps on G4_MSG_SLEEP; HELLO is 6 bytes longer:
                                       its Ethernet address (for Wake-on-LAN) at offset 80 */
 #define G4_HELLO_MAC_LEN    (G4_HELLO_V2_LEN + 6)
@@ -144,6 +151,7 @@ typedef struct {
     uint32_t raw_bytes;      /* uncompressed size of changed pixels */
     uint32_t wire_bytes;     /* size of the FRAME message           */
     int32_t  scroll_dy;      /* last detected scroll (0 = none)     */
+    uint32_t pals;           /* rects sent as palette + indices     */
 } g4_enc_stats;
 
 g4_encoder *g4enc_create(int width, int height, int depth);
@@ -163,6 +171,9 @@ void        g4enc_set_yuv(g4_encoder *e, int on);
    the data; softer while moving). Only if the client set G4_HELLO_FLAG_YUVH.
    Still video sharpens back to lossless the same way. */
 void        g4enc_set_yuv_half(g4_encoder *e, int on);
+/* send areas with few colours (text, interface) as palette + indices; only
+   if the client set G4_HELLO_FLAG_PAL */
+void        g4enc_set_palette(g4_encoder *e, int on);
 /* ms until a lossless refresh of still video tiles is due (0 = now), or -1
    if none is pending. The host should call g4enc_encode again by then even
    if the screen hasn't changed. */

@@ -82,7 +82,7 @@ extension Host {
             sendTimes[sentID] = nowMs()
             statFrames += 1; statBytes += n; statRaw += Int(st.raw_bytes); statCopies += Int(st.copies)
             statHits += Int(st.cache_hits)
-            statYuv += Int(st.yuvs); statRefresh += Int(st.refreshes)
+            statYuv += Int(st.yuvs); statRefresh += Int(st.refreshes); statPal += Int(st.pals)
         } else {
             log("sending to the PowerPC Mac failed or timed out; disconnecting")
             shutdown(fd, SHUT_RDWR)
@@ -129,11 +129,11 @@ extension Host {
         snap.at = nowMs()
         DispatchQueue.main.async { self.onStats?(snap) }
         if cfg.verbose {
-            log(String(format: "%.1f fps  %.0f KB/s  (%.1fx)  frame→screen %.1f ms  waits %d  scroll copies %d  cache hits %d  video rects %d  sharpened tiles %d",
-                       snap.fps, snap.kbps, snap.compression, snap.latencyMs, statBlocked, statCopies, statHits, statYuv, statRefresh))
+            log(String(format: "%.1f fps  %.0f KB/s  (%.1fx)  frame→screen %.1f ms  waits %d  scroll copies %d  cache hits %d  palette rects %d  video rects %d  sharpened tiles %d",
+                       snap.fps, snap.kbps, snap.compression, snap.latencyMs, statBlocked, statCopies, statHits, statPal, statYuv, statRefresh))
         }
         statT0 = nowMs(); statFrames = 0; statBytes = 0; statRaw = 0; statBlocked = 0
-        statCopies = 0; statHits = 0; statRtt = 0; statRttN = 0; statYuv = 0; statRefresh = 0
+        statCopies = 0; statHits = 0; statRtt = 0; statRttN = 0; statYuv = 0; statRefresh = 0; statPal = 0
     }
 
     // MARK: reading (connection thread)

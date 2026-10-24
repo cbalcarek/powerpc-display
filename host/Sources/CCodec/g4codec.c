@@ -290,6 +290,10 @@ struct g4_encoder {
     uint64_t *hc, *hm;     /* per row and column band: segment hashes (current / model) */
     uint8_t  *uc, *um;     /* segment is a single colour                               */
     int       nbands;      /* column bands per row (SCROLL_BAND pixels each)           */
+    /* moves in any direction (window drags, sideways scrolling) */
+    uint32_t *mkey; int32_t *mpos; size_t mcap;      /* sampled current segments   */
+    uint32_t *vkey; int32_t *vcnt; size_t vcap;      /* votes per (dx, dy)         */
+    int32_t  *hist;                                   /* largest-rectangle scratch  */
     int32_t  *votes;       /* indexed dy + h                       */
     uint64_t *tkey;        /* row hash table for scroll matching   */
     int32_t  *tval;
@@ -316,6 +320,9 @@ struct g4_encoder {
        isn't resent every frame, and it is resent losslessly once still */
     int       yuv;
     int       yuvh;      /* video at half resolution (G4_RECT_YUVH) */
+    int       pal;       /* few-colour areas as palette + indices (G4_RECT_PAL) */
+    uint8_t  *pbuf;      size_t pbuf_cap;     /* palette index stream */
+    uint8_t  *plz;       size_t plz_cap;      /* ...LZ4-compressed    */
     uint8_t  *hrows;     /* two half-res rows for g4_yuvh_paint */
     size_t    hrows_cap;
     uint8_t  *tfast;       /* per tile: changed again within YUV_FAST_MS */
@@ -379,6 +386,12 @@ g4_encoder *g4enc_create(int width, int height, int depth)
     e->tcap = 1; while (e->tcap < (size_t)height * e->nbands * 2) e->tcap <<= 1;
     e->tkey = (uint64_t *)calloc(e->tcap, sizeof(uint64_t));
     e->tval = (int32_t *)calloc(e->tcap, sizeof(int32_t));
+    e->mcap = 1 << 15; e->vcap = 1 << 12;
+    e->mkey = (uint32_t *)calloc(e->mcap, sizeof(uint32_t));
+    e->mpos = (int32_t *)calloc(e->mcap, sizeof(int32_t));
+    e->vkey = (uint32_t *)calloc(e->vcap, sizeof(uint32_t));
+    e->vcnt = (int32_t *)calloc(e->vcap, sizeof(int32_t));
+    e->hist = (int32_t *)calloc((size_t)(width + TILE - 1) / TILE + 1, sizeof(int32_t) * 2);
     {
         size_t nt = (size_t)e->tw * e->th;
         e->tlast = (uint32_t *)calloc(nt, sizeof(uint32_t));
@@ -394,7 +407,8 @@ g4_encoder *g4enc_create(int width, int height, int depth)
     e->all_dirty = 1;
 
     if (!e->cur || !e->model || !e->tiles || !e->rects || !e->hc || !e->hm ||
-        !e->uc || !e->um || !e->votes || !e->tkey || !e->tval || !e->tlast || !e->tvol ||
+        !e->uc || !e->um || !e->votes || !e->tkey || !e->tval ||
+        !e->mkey || !e->mpos || !e->vkey || !e->vcnt || !e->hist || !e->tlast || !e->tvol ||
         !e->tfast || !e->lossy || !e->lhash || !e->llast || !e->refresh || !e->vmask || !e->dmask) {
         g4enc_destroy(e);
         return NULL;
@@ -410,6 +424,8 @@ void g4enc_destroy(g4_encoder *e)
     free(e->out); free(e->gather); free(e->lz);
     free(e->hc); free(e->hm); free(e->uc); free(e->um); free(e->votes);
     free(e->tkey); free(e->tval); free(e->hrows);
+    free(e->pbuf); free(e->plz);
+    free(e->mkey); free(e->mpos); free(e->vkey); free(e->vcnt); free(e->hist);
     free(e->cpx); free(e->chash); free(e->cvalid); free(e->cref); free(e->ctab);
     free(e->thash); free(e->tstate); free(e->tlast); free(e->tvol);
     free(e->tfast); free(e->lossy); free(e->lhash); free(e->llast); free(e->refresh); free(e->vmask); free(e->dmask);
@@ -431,6 +447,7 @@ void g4enc_set_time(g4_encoder *e, uint32_t ms) { e->now_ms = ms; e->clock_set =
 
 void g4enc_set_yuv(g4_encoder *e, int on) { e->yuv = on && e->depth == 32; }
 void g4enc_set_yuv_half(g4_encoder *e, int on) { e->yuvh = on != 0; }
+void g4enc_set_palette(g4_encoder *e, int on) { e->pal = on != 0; }
 
 int g4enc_refresh_due(const g4_encoder *e, uint32_t now_ms)
 {
@@ -722,6 +739,168 @@ static int detect_scroll(g4_encoder *e, int rx, int ry, int rw, int rh,
     return 1;
 }
 
+/* ---------- moves in any direction ---------- */
+
+#define MOVE_SEG 16          /* pixels per sampled segment */
+
+static uint32_t px_at(const uint8_t *p, int bpp)
+{
+    return bpp == 4 ? ((uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3])
+                    : ((uint32_t)p[0] << 8 | p[1]);
+}
+
+/* polynomial hash of MOVE_SEG pixels; the model scan rolls the same hash */
+#define MOVE_BASE 0x01000193u
+static uint32_t seg_hash(const uint8_t *p, int bpp)
+{
+    uint32_t h = 0;
+    int i;
+    for (i = 0; i < MOVE_SEG; i++) h = h * MOVE_BASE + px_at(p + i * bpp, bpp) + 1;
+    return h;
+}
+
+/* copy a w x h block from (sx, sy) to (dx, dy) in fb, overlap-safe; the
+   decoder's G4_RECT_COPY does exactly the same */
+static void move_block(uint8_t *fb, size_t stride, int bpp, int sx, int sy, int dx, int dy, int w, int h)
+{
+    size_t n = (size_t)w * bpp;
+    int r;
+    if (dy <= sy) for (r = 0; r < h; r++)
+        memmove(fb + (size_t)(dy + r) * stride + (size_t)dx * bpp, fb + (size_t)(sy + r) * stride + (size_t)sx * bpp, n);
+    else for (r = h - 1; r >= 0; r--)
+        memmove(fb + (size_t)(dy + r) * stride + (size_t)dx * bpp, fb + (size_t)(sy + r) * stride + (size_t)sx * bpp, n);
+}
+
+/*
+ * Content that moved by (mx, my) in any direction inside rect R (a window
+ * being dragged, a sideways scroll): current pixel (x, y) == model pixel
+ * (x + mx, y + my). Samples 16-pixel segments of what changed, finds them in
+ * the previous frame with a rolling hash, takes the most common offset, and
+ * copies the largest block of 32x32 tiles that moved by exactly that much.
+ * The tile diff afterwards fixes anything else, so this never costs
+ * correctness. Returns 1 if a copy was emitted.
+ */
+static int detect_move(g4_encoder *e, int rx, int ry, int rw, int rh,
+                       uint8_t **wp, int *nrects, g4_enc_stats *st)
+{
+    const int bpp = e->bpp;
+    size_t mmask = e->mcap - 1, vmask = e->vcap - 1, i;
+    int x, y, nsamp = 0, best = 0, bmx = 0, bmy = 0, nvotes = 0;
+    uint32_t pw = 1;
+
+    if (rw < 64 || rh < 32) return 0;
+    memset(e->mpos, 0xFF, e->mcap * sizeof(int32_t));
+    memset(e->vcnt, 0, e->vcap * sizeof(int32_t));
+
+    /* sample changed, non-blank segments of the current frame */
+    for (y = ry; y < ry + rh && nsamp < (int)(e->mcap / 2); y += 4)
+        for (x = rx; x + MOVE_SEG <= rx + rw && nsamp < (int)(e->mcap / 2); x += MOVE_SEG) {
+            const uint8_t *c = e->cur + (size_t)y * e->stride + (size_t)x * bpp;
+            const uint8_t *m = e->model + (size_t)y * e->stride + (size_t)x * bpp;
+            size_t n = (size_t)MOVE_SEG * bpp, k;
+            uint32_t h;
+            if (!memcmp(c, m, n) || !memcmp(c, c + bpp, n - bpp)) continue;   /* unchanged or blank */
+            h = seg_hash(c, bpp);
+            k = (h ^ (h >> 15)) & mmask;
+            while (e->mpos[k] >= 0 && e->mkey[k] != h) k = (k + 1) & mmask;
+            if (e->mpos[k] >= 0) continue;                 /* repeated content: ambiguous */
+            e->mkey[k] = h; e->mpos[k] = y * e->w + x;
+            nsamp++;
+        }
+    if (nsamp < 8) return 0;
+
+    /* roll the hash along every model row of R; each hit votes for an offset */
+    for (i = 1; i < MOVE_SEG; i++) pw *= MOVE_BASE;
+    for (y = ry; y < ry + rh; y++) {
+        const uint8_t *m = e->model + (size_t)y * e->stride;
+        uint32_t h = seg_hash(m + (size_t)rx * bpp, bpp);
+        for (x = rx; x + MOVE_SEG <= rx + rw; x++) {
+            size_t k = (h ^ (h >> 15)) & mmask;
+            while (e->mpos[k] >= 0) {
+                if (e->mkey[k] == h) {
+                    int cx = e->mpos[k] % e->w, cy = e->mpos[k] / e->w;
+                    int mx = x - cx, my = y - cy;
+                    if ((mx || my) && !memcmp(e->cur + (size_t)cy * e->stride + (size_t)cx * bpp,
+                                             m + (size_t)x * bpp, (size_t)MOVE_SEG * bpp)) {
+                        uint32_t key = ((uint32_t)(mx + 32768) << 16) | (uint32_t)(my + 32768);
+                        size_t v = (key * 2654435761u >> 8) & vmask;
+                        while (e->vcnt[v] && e->vkey[v] != key) v = (v + 1) & vmask;
+                        /* a new offset only while the table has room (repetitive
+                           content can match at thousands of offsets) */
+                        if (e->vcnt[v] || nvotes < (int)(e->vcap * 3 / 4)) {
+                            if (!e->vcnt[v]) { e->vkey[v] = key; nvotes++; }
+                            if (++e->vcnt[v] > best) { best = e->vcnt[v]; bmx = mx; bmy = my; }
+                        }
+                    }
+                    break;
+                }
+                k = (k + 1) & mmask;
+            }
+            if (x + MOVE_SEG < rx + rw)        /* roll: drop pixel x, add pixel x + MOVE_SEG */
+                h = (h - (px_at(m + (size_t)x * bpp, bpp) + 1) * pw) * MOVE_BASE
+                    + px_at(m + (size_t)(x + MOVE_SEG) * bpp, bpp) + 1;
+        }
+    }
+    if (best < 8 || best * 5 < nsamp) return 0;
+
+    /* which tiles of R moved by exactly (bmx, bmy); then the largest
+       rectangle of them (histogram method, one pass over tile rows) */
+    {
+        int tx0 = rx / TILE, ty0 = ry / TILE, tx1 = (rx + rw + TILE - 1) / TILE, ty1 = (ry + rh + TILE - 1) / TILE;
+        int ntx = tx1 - tx0, tx, ty, bestA = 0, R0x = 0, R0y = 0, R1x = 0, R1y = 0;
+        int32_t *hgt = e->hist, *stk = e->hist + ntx + 1;
+        if (tx1 > e->tw) tx1 = e->tw;
+        if (ty1 > e->th) ty1 = e->th;
+        ntx = tx1 - tx0;
+        memset(hgt, 0, sizeof(int32_t) * (size_t)(ntx + 1));
+        for (ty = ty0; ty < ty1; ty++) {
+            int top = 0;
+            for (tx = tx0; tx < tx1; tx++) {
+                int X0 = tx * TILE, Y0 = ty * TILE, X1 = X0 + TILE, Y1 = Y0 + TILE, ok, r;
+                if (X1 > e->w) X1 = e->w;
+                if (Y1 > e->h) Y1 = e->h;
+                ok = X0 + bmx >= 0 && X1 + bmx <= e->w && Y0 + bmy >= 0 && Y1 + bmy <= e->h &&
+                     e->tiles[ty * e->tw + tx];
+                for (r = Y0; ok && r < Y1; r++)
+                    ok = !memcmp(e->cur + (size_t)r * e->stride + (size_t)X0 * bpp,
+                                 e->model + (size_t)(r + bmy) * e->stride + (size_t)(X0 + bmx) * bpp,
+                                 (size_t)(X1 - X0) * bpp);
+                hgt[tx - tx0] = ok ? hgt[tx - tx0] + 1 : 0;
+            }
+            hgt[ntx] = 0;
+            for (tx = 0; tx <= ntx; tx++) {            /* largest rectangle in the histogram */
+                int start = tx;
+                while (top > 0 && hgt[stk[top - 1]] >= hgt[tx]) {
+                    int j = stk[--top], left = top > 0 ? stk[top - 1] + 1 : 0, a = hgt[j] * (tx - left);
+                    if (a > bestA) { bestA = a; R0x = tx0 + left; R1x = tx0 + tx; R1y = ty + 1; R0y = ty + 1 - hgt[j]; }
+                    start = j;
+                }
+                (void)start;
+                stk[top++] = tx;
+            }
+        }
+        if (bestA < 4) return 0;
+        {
+            int X = R0x * TILE, Y = R0y * TILE;
+            int W = (R1x * TILE > e->w ? e->w : R1x * TILE) - X, H = (R1y * TILE > e->h ? e->h : R1y * TILE) - Y;
+            size_t pos = (size_t)(*wp - e->out);
+            uint8_t *p;
+            if (ensure(&e->out, &e->out_cap, pos + 14)) return 0;
+            p = e->out + pos;
+            p[0] = G4_RECT_COPY; p[1] = 0;
+            g4_put16(p + 2, (uint32_t)X);         g4_put16(p + 4, (uint32_t)Y);
+            g4_put16(p + 6, (uint32_t)W);         g4_put16(p + 8, (uint32_t)H);
+            g4_put16(p + 10, (uint32_t)(X + bmx)); g4_put16(p + 12, (uint32_t)(Y + bmy));
+            *wp = p + 14;
+            move_block(e->model, e->stride, bpp, X + bmx, Y + bmy, X, Y, W, H);
+        }
+    }
+    memset(e->lossy, 0, (size_t)e->tw * e->th);
+    (*nrects)++;
+    if (st) { st->copies++; st->rects++; }
+    return 1;
+}
+
 /* ---------- tile diff + rect building ---------- */
 
 /* hash of the (possibly clipped) tile at tx,ty in fb */
@@ -961,6 +1140,90 @@ static int store_pass(g4_encoder *e, uint8_t **wp, int *nrects, int changed_tota
     return 0;
 }
 
+/* at most 256 colours (16 at 16-bit, where 8-bit indices gain nothing)? */
+static int area_few_colours(const g4_encoder *e, int x0, int y0, int w, int h)
+{
+    uint32_t keys[512];
+    uint8_t used[512];
+    int n = 0, limit = e->bpp == 2 ? 16 : 256, x, y;
+    memset(used, 0, sizeof used);
+    for (y = y0; y < y0 + h; y++) {
+        const uint8_t *row = e->cur + (size_t)y * e->stride + (size_t)x0 * e->bpp;
+        uint32_t last = 0;
+        int have_last = 0;
+        for (x = 0; x < w; x++) {
+            uint32_t c = px_at(row + (size_t)x * e->bpp, e->bpp), k;
+            if (have_last && c == last) continue;           /* runs of one colour are common */
+            last = c; have_last = 1;
+            k = (c * 2654435761u) >> 23;
+            while (used[k] && keys[k] != c) k = (k + 1) & 511;
+            if (!used[k]) {
+                if (++n > limit) return 0;
+                used[k] = 1; keys[k] = c;
+            }
+        }
+    }
+    return 1;
+}
+
+static int tile_few_colours(const g4_encoder *e, int t)
+{
+    int tx = t % e->tw, ty = t / e->tw, x = tx * TILE, y = ty * TILE;
+    return area_few_colours(e, x, y, x + TILE > e->w ? e->w - x : TILE, y + TILE > e->h ? e->h - y : TILE);
+}
+
+/* Few colours (text, interface)? Build palette + packed indices of the w x h
+   pixels at g into e->pbuf, LZ4 them into e->plz if that's smaller.
+   Returns the payload size after the rect header (0 = more than 256
+   colours or not worth it); fills bits, n, pal and *clen. */
+static size_t build_palette(g4_encoder *e, const uint8_t *g, int w, int h,
+                            int *bits_out, int *n_out, uint8_t *pal, size_t *clen_out)
+{
+    const int bpp = e->bpp;
+    uint32_t keys[512];
+    int16_t  idx[512];
+    int n = 0, bits, x, y;
+    size_t rowpb, total, i, clen;
+
+    memset(idx, 0xFF, sizeof idx);
+    memset(keys, 0, sizeof keys);
+    /* pass 1: count colours (stop past 256) */
+    for (i = 0; i < (size_t)w * h; i++) {
+        uint32_t c = px_at(g + i * bpp, bpp), k = (c * 2654435761u) >> 23;
+        while (idx[k] >= 0 && keys[k] != c) k = (k + 1) & 511;
+        if (idx[k] < 0) {
+            if (n == 256) return 0;
+            keys[k] = c; idx[k] = (int16_t)n;
+            memcpy(pal + (size_t)n * bpp, g + i * bpp, (size_t)bpp);
+            n++;
+        }
+    }
+    bits = n <= 2 ? 1 : n <= 4 ? 2 : n <= 16 ? 4 : 8;
+    if (bits == 8 && bpp == 2) return 0;          /* no gain over plain 16-bit pixels */
+    rowpb = ((size_t)w * bits + 7) / 8;
+    total = rowpb * h;
+    if (ensure(&e->pbuf, &e->pbuf_cap, total)) return 0;
+    if (ensure(&e->plz, &e->plz_cap, g4_lz4_bound(total))) return 0;
+    /* pass 2: indices, high bits first, each row starting on a byte */
+    memset(e->pbuf, 0, total);
+    for (y = 0; y < h; y++) {
+        uint8_t *o = e->pbuf + (size_t)y * rowpb;
+        const uint8_t *row = g + (size_t)y * w * bpp;
+        for (x = 0; x < w; x++) {
+            uint32_t c = px_at(row + (size_t)x * bpp, bpp), k = (c * 2654435761u) >> 23;
+            unsigned v, bit;
+            while (keys[k] != c) k = (k + 1) & 511;
+            v = (unsigned)idx[k];
+            bit = (unsigned)x * bits;
+            o[bit >> 3] |= (uint8_t)(v << (8 - bits - (bit & 7)));
+        }
+    }
+    clen = g4_lz4_compress(e->pbuf, total, e->plz, e->plz_cap);
+    if (!(clen && clen < total)) clen = 0;
+    *bits_out = bits; *n_out = n; *clen_out = clen;
+    return 2 + (size_t)n * bpp + 4 + (clen ? clen : total);
+}
+
 static int encode_rect(g4_encoder *e, const mrect *r, uint8_t **wp, g4_enc_stats *st)
 {
     size_t rowb = (size_t)r->w * e->bpp, raw = rowb * r->h, xoff = (size_t)r->x * e->bpp;
@@ -999,8 +1262,22 @@ static int encode_rect(g4_encoder *e, const mrect *r, uint8_t **wp, g4_enc_stats
         *wp = p + 14;
         if (st) st->fills++;
     } else {
-        size_t clen = g4_lz4_compress(g, raw, e->lz, e->lz_cap);
-        if (clen && clen + 4 < raw) {
+        size_t clen = g4_lz4_compress(g, raw, e->lz, e->lz_cap), plen = 0, pclen = 0;
+        int pbits = 0, pn = 0;
+        uint8_t palette[256 * 4];
+        if (e->pal) plen = build_palette(e, g, r->w, r->h, &pbits, &pn, palette, &pclen);
+        if (plen && plen < (clen ? clen + 4 : raw)) {
+            size_t total = ((size_t)r->w * pbits + 7) / 8 * r->h;
+            if (ensure(&e->out, &e->out_cap, pos + 10 + plen)) return -1;
+            p = e->out + pos;
+            p[0] = G4_RECT_PAL;
+            p[10] = (uint8_t)pbits; p[11] = (uint8_t)(pn - 1);
+            memcpy(p + 12, palette, (size_t)pn * e->bpp);
+            g4_put32(p + 12 + (size_t)pn * e->bpp, (uint32_t)pclen);
+            memcpy(p + 16 + (size_t)pn * e->bpp, pclen ? e->plz : e->pbuf, pclen ? pclen : total);
+            *wp = p + 10 + plen;
+            if (st) st->pals++;
+        } else if (clen && clen + 4 < raw) {
             if (ensure(&e->out, &e->out_cap, pos + 14 + clen)) return -1;
             p = e->out + pos;
             p[0] = G4_RECT_LZ4;
@@ -1166,7 +1443,8 @@ size_t g4enc_encode(g4_encoder *e, uint32_t frame_id, const uint8_t **out, g4_en
                 int bx = x0 * TILE, by = y0 * TILE;
                 int bw = ((x1 + 1) * TILE > e->w ? e->w : (x1 + 1) * TILE) - bx;
                 int bh = ((y1 + 1) * TILE > e->h ? e->h : (y1 + 1) * TILE) - by;
-                if (detect_scroll(e, bx, by, bw, bh, &wp, &nrects, st))
+                if (detect_scroll(e, bx, by, bw, bh, &wp, &nrects, st) ||
+                    detect_move(e, bx, by, bw, bh, &wp, &nrects, st))      /* dragged window, sideways scroll */
                     changed = diff_tiles(e);
             }
         }
@@ -1183,10 +1461,38 @@ size_t g4enc_encode(g4_encoder *e, uint32_t frame_id, const uint8_t **out, g4_en
         if (yuv_pass(e, &wp, &nrects, &changed, st)) return 0;
         if (changed == 0 && nrects == 0) return 0;
 
-        nr = changed ? build_rects(e, e->tiles) : 0;
-        for (i = 0; i < nr; i++)
-            if (encode_rect(e, &e->rects[i], &wp, st)) return 0;
-        nrects += nr;
+        if (changed && e->pal) {
+            /* few-colour tiles (text, interface) and the rest (photos,
+               gradients) become separate rects, so one photo on screen
+               doesn't stop the text around it from using a palette */
+            int t, n = e->tw * e->th, pass;
+            for (t = 0; t < n; t++) e->vmask[t] = e->tiles[t] && tile_few_colours(e, t);
+            for (pass = 0; pass < 2; pass++) {
+                if (pass) for (t = 0; t < n; t++) e->vmask[t] = e->tiles[t] && !e->vmask[t];
+                nr = build_rects(e, e->vmask);
+                for (i = 0; i < nr; i++) {
+                    mrect r = e->rects[i];
+                    if (pass == 0 && r.h > TILE && !area_few_colours(e, r.x, r.y, r.w, r.h)) {
+                        /* together they may exceed 256 colours: one strip of tiles at a time */
+                        int y;
+                        for (y = r.y; y < r.y + r.h; y += TILE) {
+                            mrect sr = r;
+                            sr.y = y; sr.h = y + TILE > r.y + r.h ? r.y + r.h - y : TILE;
+                            if (encode_rect(e, &sr, &wp, st)) return 0;
+                            nrects++;
+                        }
+                    } else {
+                        if (encode_rect(e, &r, &wp, st)) return 0;
+                        nrects++;
+                    }
+                }
+            }
+        } else {
+            nr = changed ? build_rects(e, e->tiles) : 0;
+            for (i = 0; i < nr; i++)
+                if (encode_rect(e, &e->rects[i], &wp, st)) return 0;
+            nrects += nr;
+        }
 
         /* STOREs go last: the client copies tiles after the frame is decoded */
         if (e->slots && changed && store_pass(e, &wp, &nrects, changed_total, st)) return 0;
@@ -1379,6 +1685,59 @@ int g4dec_frame(g4_decoder *d, const uint8_t *p, size_t len, uint32_t *frame_id)
             }
             for (r = 0; r < (int)h; r++)
                 g4_yuv_row(src + (size_t)r * rowy, d->fb + (size_t)(y + r) * d->stride + xoff, w);
+            break;
+        }
+        case G4_RECT_PAL: {
+            unsigned bits, n, k;
+            size_t rowpb, total, clen;
+            const uint8_t *src, *palp;
+            uint8_t pal[256 * 4];
+            if (end - p < 2) return -2;
+            bits = p[0]; n = (unsigned)p[1] + 1; p += 2;
+            if ((bits != 1 && bits != 2 && bits != 4 && bits != 8) || n > (1u << bits)) return -9;
+            if ((size_t)(end - p) < (size_t)n * d->bpp + 4) return -2;
+            palp = p; p += (size_t)n * d->bpp;
+            memset(pal, 0, sizeof pal);
+            memcpy(pal, palp, (size_t)n * d->bpp);
+            for (k = n; k < 256; k++) memcpy(pal + k * d->bpp, palp, (size_t)d->bpp);   /* bad index: colour 0 */
+            clen = g4_get32(p); p += 4;
+            rowpb = ((size_t)w * bits + 7) / 8;
+            total = rowpb * h;
+            if (clen) {
+                if ((size_t)(end - p) < clen) return -2;
+                if (total > d->scratch_cap) {
+                    uint8_t *nb = (uint8_t *)realloc(d->scratch, total);
+                    if (!nb) return -5;
+                    d->scratch = nb; d->scratch_cap = total;
+                }
+                if (g4_lz4_decompress(p, clen, d->scratch, total)) return -4;
+                src = d->scratch;
+                p += clen;
+            } else {
+                if ((size_t)(end - p) < total) return -2;
+                src = p;
+                p += total;
+            }
+            for (r = 0; r < (int)h; r++) {
+                const uint8_t *in = src + (size_t)r * rowpb;
+                uint8_t *o = d->fb + (size_t)(y + r) * d->stride + xoff;
+                unsigned xx;
+                if (bits == 8) {
+                    if (d->bpp == 4) for (xx = 0; xx < w; xx++) memcpy(o + 4 * xx, pal + 4 * in[xx], 4);
+                    else             for (xx = 0; xx < w; xx++) memcpy(o + 2 * xx, pal + 2 * in[xx], 2);
+                } else {
+                    unsigned mask = (1u << bits) - 1;
+                    for (xx = 0; xx < w; ) {
+                        unsigned byte = *in++;
+                        int sh;
+                        for (sh = 8 - (int)bits; sh >= 0 && xx < w; sh -= (int)bits, xx++) {
+                            unsigned v = (byte >> sh) & mask;
+                            if (d->bpp == 4) memcpy(o + 4 * xx, pal + 4 * v, 4);
+                            else             memcpy(o + 2 * xx, pal + 2 * v, 2);
+                        }
+                    }
+                }
+            }
             break;
         }
         case G4_RECT_YUVH: {

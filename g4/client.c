@@ -1101,7 +1101,7 @@ static void run_session(int fd)
     hello[G4_HDR_SIZE + 10] = (uint8_t)s.depth;
     /* 4:2:2 video regions: decoded on the CPU into the normal framebuffer,
        so every drawing path supports them (32-bit only) */
-    hello[G4_HDR_SIZE + 11] = (uint8_t)((s.depth == 32 ? G4_HELLO_FLAG_YUV | G4_HELLO_FLAG_YUVH : 0) | G4_HELLO_FLAG_AUTH |
+    hello[G4_HDR_SIZE + 11] = (uint8_t)((s.depth == 32 ? G4_HELLO_FLAG_YUV | G4_HELLO_FLAG_YUVH : 0) | G4_HELLO_FLAG_AUTH | G4_HELLO_FLAG_PAL |
                                         (hello_len == G4_HELLO_MAC_LEN ? G4_HELLO_FLAG_SLEEP : 0));
     memcpy(hello + G4_HDR_SIZE + 16, my_id, G4_ID_BYTES);
     memcpy(hello + G4_HDR_SIZE + 32, nonce, G4_NONCE_BYTES);

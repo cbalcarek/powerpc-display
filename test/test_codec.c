@@ -104,6 +104,28 @@ static void render_browser(int scroll)
         else px(x, y, 60, 60, 62);
 }
 
+/* wallpaper + a 600x400 window at (wx, wy) whose content is scrolled
+   sideways by sx: dragging moves it rigidly, sx moves just the content */
+static void render_window(int wx, int wy, int sx)
+{
+    int x, y;
+    for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
+        if (y < 22) px(x, y, 236, 236, 236);
+        else px(x, y, 20 + y / 10, 30 + x / 30, 70);
+    }
+    for (y = wy; y < wy + 400 && y < H; y++) for (x = wx; x < wx + 600 && x < W; x++) {
+        int lx = x - wx, ly = y - wy;
+        if (x < 0 || y < 0) continue;
+        if (ly < 22) { px(x, y, 210, 210, 214); continue; }          /* title bar */
+        {
+            int cx = lx + sx, row = (ly - 22) / 18, gy = (ly - 22) % 18;
+            uint32_t g = (uint32_t)(cx / 8) * 2654435761u ^ (uint32_t)row * 40503u;
+            int ink = gy >= 3 && gy < 15 && ((g >> 7) % 5) && (((g >> ((cx & 7) + gy)) & 3) == 0);
+            if (ink) px(x, y, 40, 40, 50); else px(x, y, 250, 250, 250);
+        }
+    }
+}
+
 static void photo(int x0, int y0, int w, int h)
 {
     int x, y;
@@ -128,7 +150,7 @@ static void caret(int on)
 }
 
 
-static int run(int depth, int slots)
+static int run(int depth, int slots, int pal)
 {
     g4_encoder *e = g4enc_create(W, H, depth);
     int bpp = depth == 16 ? 2 : 4;
@@ -136,11 +158,12 @@ static int run(int depth, int slots)
     g4_decoder d;
     uint32_t fid = 0;
     int scroll = 0, i, fails = 0, si = 0;
-    scen sc[20];
+    scen sc[24];
     memset(sc, 0, sizeof sc);
     g4dec_init(&d, fb, W, H, depth);
     g4dec_enable_cache(&d, slots);
     g4enc_enable_cache(e, slots);
+    g4enc_set_palette(e, pal);
     for (i = 0; i < NLINES; i++) lineseed[i] = (uint32_t)i * 7919u + 17;
     theme = 0;
 
@@ -213,6 +236,23 @@ static int run(int depth, int slots)
     si++;
     render(scroll); STEP(0);
 
+    sc[si].name = "drag window, no hint";
+    for (i = 0; i < 25; i++) { render_window(200 + i * 23, 150 + i * 9, 0); STEP(0); }
+    si++;
+
+    sc[si].name = "drag window + hint";
+    for (i = 0; i < 25; i++) {
+        render_window(775 - i * 17, 375 - i * 11, 0);
+        g4enc_add_hint(e, 775 - i * 17, 375 - i * 11, 640, 420);
+        STEP(0);
+    }
+    si++;
+
+    sc[si].name = "sideways scroll";
+    for (i = 0; i < 25; i++) { render_window(300, 200, i * 40); STEP(0); }
+    si++;
+    render(scroll); STEP(0);
+
     sc[si].name = "video 400x300 @30fps";
     clk_step = 33;
     for (i = 0; i < 10; i++) { render(scroll); photo(500, 300, 400, 300); STEP(0); }
@@ -239,7 +279,7 @@ static int run(int depth, int slots)
     for (i = 0; i < 20; i++) { render(scroll); caret(i & 1); STEP(0); }
     si++;
 
-    printf("depth %d, cache %d slots:\n", depth, slots);
+    printf("depth %d, cache %d slots%s:\n", depth, slots, pal ? ", palette" : "");
     for (i = 0; i < si; i++) {
         printf("  %-24s %3d fr  avg %7.1f KB wire  (%6.1f KB changed px)  copies %3d  hits %5d  stores %5d  dec %.2f ms\n",
                sc[i].name, sc[i].frames, sc[i].bytes / sc[i].frames / 1024.0,
@@ -388,7 +428,7 @@ static int run_rects(int depth, int yuv)
     uint32_t fid = 0, t = 1000;
     double bytes = 0;
     g4dec_init(&d, fb, W, H, depth);
-    g4dec_enable_cache(&d, 1024); g4enc_enable_cache(e, 1024);
+    g4dec_enable_cache(&d, 1024); g4enc_enable_cache(e, 1024); g4enc_set_palette(e, 1);
     g4enc_set_yuv(e, yuv);
     for (i = 0; i < NLINES; i++) lineseed[i] = (uint32_t)i * 7919u + 17;
     theme = 0; render(0);
@@ -457,9 +497,11 @@ int main(int argc, char **argv)
         printf(fails ? "\nFAILED (%d)\n" : "\nALL TESTS PASSED\n", fails);
         return fails != 0;
     }
-    fails += run(32, 0);
-    fails += run(32, G4_DEFAULT_SLOTS);
-    fails += run(16, G4_DEFAULT_SLOTS);
+    fails += run(32, 0, 0);
+    fails += run(32, 0, 1);
+    fails += run(32, G4_DEFAULT_SLOTS, 1);
+    fails += run(16, G4_DEFAULT_SLOTS, 0);
+    fails += run(16, G4_DEFAULT_SLOTS, 1);
     fails += run_yuv();
     fails += run_rects(32, 0); fails += run_rects(32, 1); fails += run_rects(16, 0);
     printf(fails ? "\nFAILED (%d)\n" : "\nALL TESTS PASSED\n", fails);
