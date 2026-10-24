@@ -75,6 +75,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(action("Forget Paired PowerPC Macs…", #selector(forgetPairings)))
+        menu.addItem(action("Check for Updates…", #selector(checkUpdates)))
         menu.addItem(action("Quit PowerPC Display", #selector(quit), key: "q"))
     }
 
@@ -99,5 +100,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func toggleSmooth() { controller.setSmoothVideo(!model.smoothVideo) }
     @objc private func toggleFast() { controller.setFastVideo(!model.fastVideo) }
     @objc private func forgetPairings() { controller.forgetPairings() }
+    @objc private func checkUpdates() { controller.checkForUpdates() }
     @objc private func quit() { NSApp.terminate(nil) }
 }

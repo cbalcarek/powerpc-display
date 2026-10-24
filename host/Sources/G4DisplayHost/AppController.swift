@@ -75,6 +75,7 @@ final class AppModel: ObservableObject {
 
 final class AppController: NSObject, NSApplicationDelegate {
     let host: Host
+    let updater = AppUpdater()
     let model: AppModel
     private var menuBar: MenuBarController?
     private var window: NSWindow?
@@ -137,6 +138,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         ws.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.host.macDidWake("the displays woke up")
         }
+        // quietly, at most once a day: a new release, and the PowerPC app for PowerPC Macs
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.updater.check(userInitiated: false) }
         log("PowerPC Display running — status window open, menu bar icon added")
     }
 
@@ -176,6 +179,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         show.target = self
         let forget = appMenu.addItem(withTitle: "Forget Paired PowerPC Macs…", action: #selector(forgetPairingsAction), keyEquivalent: "")
         forget.target = self
+        let upd = appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        upd.target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide PowerPC Display", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "Quit PowerPC Display", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -194,6 +199,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func forgetPairingsAction() { forgetPairings() }
+    @objc func checkForUpdates() { updater.check(userInitiated: true) }
 
     // MARK: - actions (used by both the window and the menu bar)
 

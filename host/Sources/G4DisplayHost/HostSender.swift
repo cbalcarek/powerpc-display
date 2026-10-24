@@ -20,6 +20,8 @@ extension Host {
         }
         sentID = 0; ackedID = 0; pending = false
         sendTimes.removeAll()
+        peerVersion = ""; offered = nil
+        rttAvg = 0; paced = false
         needFullIngest = true
         lastHeard = nowMs()
         startPings()
@@ -67,7 +69,7 @@ extension Host {
     /// meanwhile goes out as one coalesced frame. This is what keeps lag low.
     func trySend() {
         guard pending, fd >= 0, let enc else { return }
-        if sentID &- ackedID >= cfg.maxInFlight { statBlocked += 1; return }
+        if sentID &- ackedID >= inFlightLimit() { statBlocked += 1; return }
 
         var out: UnsafePointer<UInt8>?
         var st = g4_enc_stats()
@@ -108,10 +110,38 @@ extension Host {
         }
     }
 
+    /// Adaptive pacing. Normally 2 frames in flight, so the network and the
+    /// PowerPC Mac's decoding overlap (more frames per second). But when the
+    /// link is backed up (frames take > 60 ms to reach the screen) while
+    /// you're moving the mouse or scrolling, allow only 1: what you see is
+    /// then at most one frame behind your hand. Back to 2 once you stop or
+    /// the link clears. encQ.
+    func inFlightLimit() -> UInt32 {
+        if cfg.inFlightFixed || cfg.maxInFlight < 2 { return cfg.maxInFlight }
+        let interactive = nowMs() - lastInput < 600
+        if !paced, interactive, rttAvg > 60 {
+            paced = true
+            if cfg.verbose { log(String(format: "pacing: 1 frame in flight while you interact (%.0f ms to screen)", rttAvg)) }
+        } else if paced, !interactive || rttAvg < 25 {
+            paced = false
+            if cfg.verbose { log("pacing: back to \(cfg.maxInFlight) frames in flight") }
+        }
+        return paced ? 1 : cfg.maxInFlight
+    }
+
+    /// Main thread: the mouse moved, clicked or scrolled.
+    func noteInput() {
+        encQ.async { self.lastInput = nowMs() }
+    }
+
     func onAck(_ id: UInt32) {
         lastHeard = nowMs()
         guard id > ackedID, id <= sentID else { return }
-        if let t = sendTimes[id] { statRtt += nowMs() - t; statRttN += 1 }
+        if let t = sendTimes[id] {
+            let rtt = nowMs() - t
+            statRtt += rtt; statRttN += 1
+            rttAvg = rttAvg == 0 ? rtt : rttAvg * 0.8 + rtt * 0.2
+        }
         for k in sendTimes.keys where k <= id { sendTimes[k] = nil }
         ackedID = id
         trySend()
@@ -153,6 +183,11 @@ extension Host {
                 encQ.async { self.onAck(id) }
             } else if type == Int(G4_MSG_PONG) {
                 encQ.async { self.lastHeard = nowMs() }
+            } else if type == Int(G4_MSG_INFO), len > 0, len <= 32 {
+                let v = String(decoding: payload[0..<len], as: UTF8.self)
+                encQ.async { self.onClientVersion(v) }
+            } else if type == Int(G4_MSG_UPDATE_REQ) {
+                encQ.async { self.sendUpdate() }
             }
         }
     }

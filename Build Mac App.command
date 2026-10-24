@@ -25,6 +25,9 @@ if [ "$OLD_REQ" != "$NEW_REQ" ]; then
     echo "When macOS asks, allow PowerPC Display, then quit and reopen it (once)."
     echo
 fi
+# where the releases folder is: the app offers PowerPC Macs the newest
+# releases/PowerPC-Display-Tiger.zip (the Tiger build sends it there)
+defaults write local.ppcdisplay.host releasesDir "$(cd .. && pwd)/releases"
 open "/Applications/PowerPC Display.app"
 mkdir -p ../releases
 ditto -c -k --keepParent "/Applications/PowerPC Display.app" ../releases/PowerPC-Display-Mac.zip &&

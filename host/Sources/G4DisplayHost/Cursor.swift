@@ -36,6 +36,15 @@ final class CursorTracker {
         if let l = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] e in self?.poll(); return e }) {
             monitors.append(l)
         }
+        // any input (no Accessibility needed for these): adaptive pacing
+        let input: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+                                            .scrollWheel, .leftMouseDown, .rightMouseDown]
+        if let g = NSEvent.addGlobalMonitorForEvents(matching: input, handler: { [weak self] _ in self?.host?.noteInput() }) {
+            monitors.append(g)
+        }
+        if let l = NSEvent.addLocalMonitorForEvents(matching: input, handler: { [weak self] e in self?.host?.noteInput(); return e }) {
+            monitors.append(l)
+        }
         let t = DispatchSource.makeTimerSource(queue: .main)
         t.schedule(deadline: .now(), repeating: .milliseconds(100), leeway: .milliseconds(20))
         t.setEventHandler { [weak self] in self?.poll() }

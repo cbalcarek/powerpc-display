@@ -19,6 +19,12 @@ typedef void (*g4c_status_fn)(int state, const char *text);
 typedef void (*g4c_cursor_fn)(const unsigned char *argb, int w, int h, int hotx, int hoty);
 void g4c_set_cursor_hook(g4c_cursor_fn fn);
 void g4c_set_hardware_cursor(int on);         /* default on (app only); applies from the next connection */
+/* updates offered by the other Mac (app only): our version, and a hook
+   called (engine thread) once a newer version has been downloaded and
+   checked, with the path of its zip */
+typedef void (*g4c_update_fn)(const char *version, const char *zip_path);
+void g4c_set_app_version(const char *version);
+void g4c_set_update_hook(g4c_update_fn fn);
 void g4c_set_sleep_with_host(int on);         /* default on: sleep when the other Mac sleeps (woken by Wake-on-LAN) */
 int  g4c_sleep_with_host(void);
 void g4c_set_always_opengl(int on);           /* default off: Rage 128-class GPUs draw directly (faster) */

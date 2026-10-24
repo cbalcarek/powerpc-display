@@ -33,6 +33,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         var fixedDisplayID: CGDirectDisplayID? = nil   // use an existing display (e.g. BetterDisplay)
         var fps: Int = 60
         var maxInFlight: UInt32 = 2
+        var inFlightFixed = false              // --inflight given: no adaptive pacing
         var verbose = false
         var mirror = false                     // show the main display instead of a new one
         var smoothVideo = true                 // video regions as 4:2:2 (half the data, softer)
@@ -83,6 +84,8 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var clientYUV = false                      // the connected client can decode 4:2:2 rects
     var clientHalfVideo = false                // ...and half-resolution ones (0.11+)
     var clientSleeps = false                   // ...and sleeps when told to (0.11+)
+    var peerVersion = ""                       // its app version (0.11+ tell us)
+    var offered: TigerUpdate.Package?          // the update we offered it
     var refreshScheduled = false
     var sentID: UInt32 = 0
     var ackedID: UInt32 = 0
@@ -91,6 +94,9 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var hintScale: CGFloat = 1
     var hintOffX: CGFloat = 0, hintOffY: CGFloat = 0   // letterbox offsets (mirror mode)
     var lastHeard = 0.0                        // last ACK/PONG from the PowerPC Mac
+    var lastInput = 0.0                        // last mouse move / click / scroll here
+    var rttAvg = 0.0                           // smoothed frame -> screen time (ms)
+    var paced = false                          // adaptive pacing: 1 frame in flight
     var pingTimer: DispatchSourceTimer?
     var pingSeq: UInt32 = 0
     var needFullIngest = true                  // next frame: convert the whole screen

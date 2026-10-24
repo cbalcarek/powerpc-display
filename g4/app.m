@@ -64,10 +64,15 @@ static BOOL wake_on_lan_enabled(void)
     NSTextField *statsField;        /* performance stats, when turned on */
     int          state;
     NSCursor    *remoteCursor;      /* the other Mac's pointer, as our system cursor */
+    NSString    *updateZip;         /* a newer version downloaded from the other Mac */
+    NSString    *updateVersion;
+    BOOL         updateAsked;
 }
 - (void)showStatus:(NSDictionary *)info;
 - (void)updateNetButton;
 - (void)explainWakeOnLAN;
+- (void)updateReady:(NSDictionary *)info;
+- (void)offerUpdate;
 - (void)setRemoteCursor:(NSDictionary *)info;
 @end
 
@@ -82,6 +87,17 @@ static void status_hook(int st, const char *text)
                           [NSNumber numberWithInt:st], @"state",
                           (s ? s : @""), @"text", nil];
     [gDelegate performSelectorOnMainThread:@selector(showStatus:) withObject:info waitUntilDone:NO];
+    [pool release];
+}
+
+/* called on the engine thread: a newer version was downloaded from the other Mac */
+static void update_hook(const char *version, const char *zip)
+{
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    NSDictionary *info = [NSDictionary dictionaryWithObjectsAndKeys:
+                          [NSString stringWithUTF8String:version], @"version",
+                          [NSString stringWithUTF8String:zip], @"zip", nil];
+    [gDelegate performSelectorOnMainThread:@selector(updateReady:) withObject:info waitUntilDone:NO];
     [pool release];
 }
 
@@ -136,6 +152,7 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
 
     [appMenu addItemWithTitle:@"About PowerPC Display" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
     [appMenu addItem:[NSMenuItem separatorItem]];
+    [[appMenu addItemWithTitle:@"Install Update..." action:@selector(installUpdate:) keyEquivalent:@""] setTarget:self];
     [[appMenu addItemWithTitle:@"Sleep When Your Mac Sleeps" action:@selector(toggleSleepWithHost:) keyEquivalent:@""] setTarget:self];
     [[appMenu addItemWithTitle:@"Forget Paired Macs..." action:@selector(forgetPairings:) keyEquivalent:@""] setTarget:self];
     [appMenu addItem:[NSMenuItem separatorItem]];
@@ -293,6 +310,11 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(keepCursor:) userInfo:nil repeats:YES];
     g4c_set_depth(mode == 1 ? 32 : mode == 2 ? 16 : 0);
     g4c_set_status_hook(status_hook);
+    {
+        NSString *v = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"];
+        if (v) g4c_set_app_version([v UTF8String]);
+        g4c_set_update_hook(update_hook);
+    }
     [NSThread detachNewThreadSelector:@selector(engineThread:) toTarget:self withObject:nil];
 }
 
@@ -333,6 +355,7 @@ static void cursor_hook(const unsigned char *argb, int w, int h, int hx, int hy)
     if (prev == G4C_CONNECTED && state != G4C_CONNECTED) {
         [NSApp activateIgnoringOtherApps:YES];
         [window makeKeyAndOrderFront:nil];
+        if (updateZip && !updateAsked) [self performSelector:@selector(offerUpdate) withObject:nil afterDelay:0.5];
     }
 }
 
@@ -495,12 +518,92 @@ static NSString *log_path(void)
     fprintf(stderr, "always draw with OpenGL %s (from the next connection)\n", on ? "on" : "off");
 }
 
+/* ---- updates from the other Mac ---- */
+
+- (void)updateReady:(NSDictionary *)info
+{
+    [updateZip release]; [updateVersion release];
+    updateZip = [[info objectForKey:@"zip"] retain];
+    updateVersion = [[info objectForKey:@"version"] retain];
+    updateAsked = NO;
+    if (state != G4C_CONNECTED) [self offerUpdate];   /* else when the window comes back */
+}
+
+- (void)offerUpdate
+{
+    NSAlert *a;
+    if (!updateZip || updateAsked) return;
+    updateAsked = YES;
+    a = [[[NSAlert alloc] init] autorelease];
+    [a setMessageText:[NSString stringWithFormat:@"PowerPC Display %@ is ready to install", updateVersion]];
+    [a setInformativeText:@"Your Mac sent this Mac the new version. Installing replaces this app and opens the new one; it takes a few seconds."];
+    [a addButtonWithTitle:@"Install and Restart"];
+    [a addButtonWithTitle:@"Later"];
+    [NSApp activateIgnoringOtherApps:YES];
+    if ([a runModal] == NSAlertFirstButtonReturn) [self installUpdate:nil];
+}
+
+static NSString *shq(NSString *s)    /* single-quoted for /bin/sh */
+{
+    NSMutableString *m = [NSMutableString stringWithString:s];
+    [m replaceOccurrencesOfString:@"'" withString:@"'\\''" options:0 range:NSMakeRange(0, [m length])];
+    return [NSString stringWithFormat:@"'%@'", m];
+}
+
+- (void)installUpdate:(id)sender
+{
+    NSString *tmp = @"/tmp/ppcdisplay-update";
+    NSString *newApp = [tmp stringByAppendingPathComponent:@"PowerPC Display.app"];
+    NSString *cur = [[NSBundle mainBundle] bundlePath];
+    NSString *parent = [cur stringByDeletingLastPathComponent];
+    NSString *script;
+    NSDictionary *plist;
+    NSTask *t;
+
+    if (!updateZip) return;
+    /* unpack and check it's really PowerPC Display */
+    t = [NSTask launchedTaskWithLaunchPath:@"/bin/sh" arguments:[NSArray arrayWithObjects:@"-c",
+          [NSString stringWithFormat:@"rm -rf %@ && /usr/bin/ditto -x -k %@ %@", shq(tmp), shq(updateZip), shq(tmp)], nil]];
+    [t waitUntilExit];
+    plist = [NSDictionary dictionaryWithContentsOfFile:[newApp stringByAppendingPathComponent:@"Contents/Info.plist"]];
+    if ([t terminationStatus] != 0 || ![[plist objectForKey:@"CFBundleIdentifier"] isEqualToString:@"local.ppcdisplay.client"]) {
+        NSAlert *a = [[[NSAlert alloc] init] autorelease];
+        [a setMessageText:@"The update couldn't be unpacked"];
+        [a setInformativeText:@"Nothing was changed. Your Mac will offer it again next time it connects."];
+        [a runModal];
+        [[NSFileManager defaultManager] removeFileAtPath:updateZip handler:nil];
+        [updateZip release]; updateZip = nil;
+        return;
+    }
+    /* swap the apps once we've quit, then open the new one */
+    script = [NSString stringWithFormat:
+              @"(sleep 2; rm -rf %@; mv %@ %@ && mv %@ %@ && rm -rf %@; open %@) >/dev/null 2>&1 &",
+              shq([cur stringByAppendingString:@".old"]), shq(cur), shq([cur stringByAppendingString:@".old"]),
+              shq(newApp), shq(cur), shq([cur stringByAppendingString:@".old"]), shq(cur)];
+    if (access([parent fileSystemRepresentation], W_OK) == 0 && access([cur fileSystemRepresentation], W_OK) == 0) {
+        [NSTask launchedTaskWithLaunchPath:@"/bin/sh" arguments:[NSArray arrayWithObjects:@"-c", script, nil]];
+    } else {
+        NSMutableString *esc = [NSMutableString stringWithString:script];
+        NSDictionary *err = nil;
+        NSAppleScript *as;
+        [esc replaceOccurrencesOfString:@"\\" withString:@"\\\\" options:0 range:NSMakeRange(0, [esc length])];
+        [esc replaceOccurrencesOfString:@"\"" withString:@"\\\"" options:0 range:NSMakeRange(0, [esc length])];
+        as = [[[NSAppleScript alloc] initWithSource:
+               [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", esc]] autorelease];
+        [as executeAndReturnError:&err];
+        if (err) { NSLog(@"PowerPC Display: update not installed: %@", err); return; }
+    }
+    fprintf(stderr, "installing PowerPC Display %s and restarting\n", [updateVersion UTF8String]);
+    [NSApp terminate:nil];
+}
+
 - (BOOL)validateMenuItem:(NSMenuItem *)item
 {
     SEL a = [item action];
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     if (a == @selector(toggleStats:)) [item setState:(g4c_verbose() ? NSOnState : NSOffState)];
     if (a == @selector(toggleAlwaysGL:)) [item setState:(g4c_always_opengl() ? NSOnState : NSOffState)];
+    if (a == @selector(installUpdate:)) return updateZip != nil;
     if (a == @selector(toggleSleepWithHost:)) [item setState:(g4c_sleep_with_host() ? NSOnState : NSOffState)];
     if (a == @selector(toggleHardwareCursor:))
         [item setState:(([ud objectForKey:@"hardwareCursor"] ? [ud boolForKey:@"hardwareCursor"] : YES) ? NSOnState : NSOffState)];

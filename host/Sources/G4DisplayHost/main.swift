@@ -53,7 +53,7 @@ while i < args.count {
     case "--name": cfg.g4Name = next()
     case "--display-id": cfg.fixedDisplayID = CGDirectDisplayID(next())
     case "--fps": cfg.fps = max(1, min(120, Int(next()) ?? 60))
-    case "--inflight": cfg.maxInFlight = max(1, UInt32(next()) ?? 2)
+    case "--inflight": cfg.maxInFlight = max(1, UInt32(next()) ?? 2); cfg.inFlightFixed = true
     case "-v": cfg.verbose = true
     case "--mirror": cfg.mirror = true
     case "--extend": cfg.mirror = false

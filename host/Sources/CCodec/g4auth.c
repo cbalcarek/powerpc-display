@@ -36,6 +36,11 @@ int g4_dh_keypair(uint8_t pub[G4_PUB_BYTES], uint8_t priv[G4_PUB_BYTES])
 
 #define SHA512_BLOCK 128
 
+void g4_sha512(uint8_t out[64], const uint8_t *msg, size_t len)
+{
+    crypto_hash(out, msg, (unsigned long long)len);
+}
+
 void g4_hmac_sha512(uint8_t out[64], const uint8_t *key, size_t klen, const uint8_t *msg, size_t mlen)
 {
     uint8_t k[SHA512_BLOCK], inner[64], buf[SHA512_BLOCK + 64];

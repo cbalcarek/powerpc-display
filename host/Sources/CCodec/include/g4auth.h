@@ -49,6 +49,7 @@ void     g4_auth_tag(uint8_t tag[G4_TAG_BYTES], const uint8_t key[G4_KEY_BYTES],
 int      g4_equal(const uint8_t *a, const uint8_t *b, size_t n);
 /* HMAC-SHA512 (exposed for tests) */
 void     g4_hmac_sha512(uint8_t out[64], const uint8_t *key, size_t klen, const uint8_t *msg, size_t mlen);
+void     g4_sha512(uint8_t out[64], const uint8_t *msg, size_t len);
 /* lowercase hex; out needs 2n+1 bytes. g4_unhex: 0 = ok */
 void     g4_hex(const uint8_t *in, size_t n, char *out);
 int      g4_unhex(const char *in, uint8_t *out, size_t n);

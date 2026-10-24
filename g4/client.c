@@ -72,7 +72,10 @@ static int  opt_slots   = -1;   /* -1 = automatic (from RAM) */
 static int  opt_test    = 0;   /* -t: no OpenGL, decode only, save PNG snapshots */
 static volatile int quit_requested = 0;
 static int app_mode = 0;   /* set by the Tiger app (app.m) */
-static int opt_sleep_with_host = 1;   /* sleep when the other Mac does */
+static int opt_sleep_with_host = 1;
+static char app_version[32];               /* set by the app: offered updates are compared with it */
+static char ready_version[32];             /* an update already downloaded this run */
+static g4c_update_fn update_hook = NULL;   /* sleep when the other Mac does */
 static int opt_always_gl = 0;  /* app: use OpenGL even on Rage 128-class GPUs */
 static const char *render_name = "none";
 static int opt_hwcursor = 1;   /* app: show the pointer as the real (hardware) cursor */
@@ -285,12 +288,17 @@ typedef struct {
        screen back instead of freezing on the last picture */
     double last_rx;
     int got_ping;
+    /* update from the other Mac, being received */
+    uint8_t *upd; uint32_t upd_size, upd_got; uint8_t upd_hash[64]; char upd_version[32];
 
     /* hardware cursor (app): moving the pointer is one call, no redraw and
        no wait for the display refresh, so frames never queue behind it */
     int hw, hw_shown;
     int host_sleeping;         /* the other Mac said it's going to sleep */
 } session;
+
+static int  update_offer(session *s, const uint8_t *p, uint32_t len);
+static void update_data(session *s, const uint8_t *p, uint32_t len);
 
 /* Call fn for each run of consecutive changed bands (rows y0..y1). Only the
    bands that changed are uploaded: a menu-bar clock and a line of typing at
@@ -839,6 +847,12 @@ static int handle_message(session *s, int *need_draw, uint32_t *frame_to_ack)
             hw_cursor_sync(s);
         } else *need_draw = 1;
         break;
+    case G4_MSG_UPDATE_OFFER:
+        if (update_offer(s, s->msg, len)) return -1;
+        break;
+    case G4_MSG_UPDATE_DATA:
+        update_data(s, s->msg, len);
+        break;
     case G4_MSG_SLEEP:
         s->host_sleeping = 1;
         return -1;                  /* end the session; see sleep_with_host() */
@@ -1129,6 +1143,13 @@ static void run_session(int fd)
         return;
     }
     memset(cpriv, 0, sizeof cpriv);
+    if (app_version[0]) {                       /* the app can be updated from the other Mac */
+        uint8_t m[G4_HDR_SIZE + 32];
+        size_t vl = strlen(app_version);
+        g4_put_header(m, G4_MSG_INFO, (uint32_t)vl);
+        memcpy(m + G4_HDR_SIZE, app_version, vl);
+        write_full(fd, m, G4_HDR_SIZE + vl);
+    }
 
     {
         char msg[256];
@@ -1300,6 +1321,7 @@ static void run_session(int fd)
     g4dec_free(&s.dec);
     free(s.fb);
     free(s.msg);
+    free(s.upd);
     fprintf(stderr, "host disconnected\n");
     if (s.host_sleeping) {
         /* only if we were showing the other Mac: nobody is using this one */
@@ -1386,6 +1408,86 @@ static void sleep_with_host(void)
     }
 #endif
 }
+
+/* "0.12" > "0.9": compare dot-separated numbers */
+static int version_newer(const char *a, const char *b)
+{
+    while (*a || *b) {
+        long x = strtol(a, (char **)&a, 10), y = strtol(b, (char **)&b, 10);
+        if (x != y) return x > y;
+        if (*a == '.') a++;
+        if (*b == '.') b++;
+        if ((*a && !(*a >= '0' && *a <= '9')) || (*b && !(*b >= '0' && *b <= '9'))) break;
+    }
+    return 0;
+}
+
+static void update_drop(session *s)
+{
+    free(s->upd); s->upd = NULL; s->upd_size = s->upd_got = 0;
+}
+
+/* the other Mac has a newer PowerPC Display: fetch it in the background */
+static int update_offer(session *s, const uint8_t *p, uint32_t len)
+{
+    uint32_t size;
+    size_t vl;
+    if (len < 4 + 64 + 1 || !app_version[0] || s->upd) return 0;
+    size = g4_get32(p);
+    vl = len - 68 < sizeof s->upd_version - 1 ? len - 68 : sizeof s->upd_version - 1;
+    memcpy(s->upd_version, p + 68, vl); s->upd_version[vl] = 0;
+    if (!version_newer(s->upd_version, app_version) || !strcmp(s->upd_version, ready_version)) return 0;
+    if (size == 0 || size > 64u * 1024 * 1024) return 0;
+    s->upd = (uint8_t *)malloc(size);
+    if (!s->upd) return 0;
+    s->upd_size = size; s->upd_got = 0;
+    memcpy(s->upd_hash, p + 4, 64);
+    fprintf(stderr, "your Mac has PowerPC Display %s: downloading it (%u KB)\n", s->upd_version, (unsigned)(size / 1024));
+    {
+        uint8_t m[G4_HDR_SIZE];
+        g4_put_header(m, G4_MSG_UPDATE_REQ, 0);
+        return write_full(s->fd, m, sizeof m);
+    }
+}
+
+static void update_data(session *s, const uint8_t *p, uint32_t len)
+{
+    uint32_t off;
+    if (!s->upd || len < 4) return;
+    off = g4_get32(p);
+    if (off != s->upd_got || len - 4 > s->upd_size - off) { update_drop(s); return; }
+    memcpy(s->upd + off, p + 4, len - 4);
+    s->upd_got += len - 4;
+    if (s->upd_got < s->upd_size) return;
+    {
+        uint8_t h[64];
+        char dir[1024], path[1100];
+        const char *home = getenv("HOME");
+        FILE *f;
+        g4_sha512(h, s->upd, s->upd_size);
+        if (memcmp(h, s->upd_hash, 64) || !home) {
+            fprintf(stderr, "update download was damaged; ignoring it\n");
+            update_drop(s); return;
+        }
+        snprintf(dir, sizeof dir, "%s/Library/Application Support/PowerPC Display", home);
+        mkdir(dir, 0700);
+        snprintf(path, sizeof path, "%s/PowerPC-Display-Tiger-%s.zip", dir, s->upd_version);
+        f = fopen(path, "wb");
+        if (!f || fwrite(s->upd, 1, s->upd_size, f) != s->upd_size) {
+            fprintf(stderr, "couldn't save the update to %s\n", path);
+            if (f) fclose(f);
+            update_drop(s); return;
+        }
+        fclose(f);
+        update_drop(s);
+        snprintf(ready_version, sizeof ready_version, "%s", s->upd_version);
+        fprintf(stderr, "PowerPC Display %s downloaded: %s\n", ready_version, path);
+        if (update_hook) update_hook(ready_version, path);
+    }
+}
+
+void g4c_set_app_version(const char *v) { snprintf(app_version, sizeof app_version, "%s", v ? v : ""); }
+void g4c_set_update_hook(g4c_update_fn fn) { update_hook = fn; }
 
 void g4c_set_sleep_with_host(int on) { opt_sleep_with_host = on != 0; }
 int  g4c_sleep_with_host(void) { return opt_sleep_with_host; }
@@ -1614,6 +1716,8 @@ int g4c_server_run(void)
 int main(int argc, char **argv)
 {
     int i;
+    /* tests only: act like the app at this version (accept updates) */
+    if (getenv("PPCDISPLAY_TEST_VERSION")) g4c_set_app_version(getenv("PPCDISPLAY_TEST_VERSION"));
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-16")) opt_depth = 16;
         else if (!strcmp(argv[i], "-32")) opt_depth = 32;

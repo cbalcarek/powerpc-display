@@ -41,8 +41,13 @@ enum {
     G4_MSG_AUTH         = 8,  /* host -> client, right after HELLO      */
     G4_MSG_AUTH_OK      = 9,  /* client -> host                         */
     G4_MSG_AUTH_FAIL    = 10, /* client -> host: u32 reason             */
-    G4_MSG_SLEEP        = 11  /* host -> client: I'm going to sleep (no payload);
+    G4_MSG_SLEEP        = 11, /* host -> client: I'm going to sleep (no payload);
                                  sleep too if set to, and expect Wake-on-LAN */
+    /* updating the PowerPC app from the other Mac (app 0.11+) */
+    G4_MSG_INFO         = 12, /* client -> host: its app version, ASCII ("0.12") */
+    G4_MSG_UPDATE_OFFER = 13, /* host -> client: u32 size, 64-byte SHA-512, version */
+    G4_MSG_UPDATE_REQ   = 14, /* client -> host: send it (no payload)            */
+    G4_MSG_UPDATE_DATA  = 15  /* host -> client: u32 offset, then bytes          */
 };
 
 /* AUTH_FAIL reasons */
