@@ -241,6 +241,10 @@ typedef struct {
     CGLContextObj ctx;
     GLuint fbtex, curtex;
     GLenum fmt_type;
+    GLenum target;             /* GL_TEXTURE_RECTANGLE_EXT, or GL_TEXTURE_2D on
+                                  older GPUs (Rage 128): power-of-two textures */
+    int tex_w, tex_h;          /* GL_TEXTURE_2D: texture size (>= W, H) */
+    int cur_tw, cur_th;        /* GL_TEXTURE_2D: cursor texture size */
     uint8_t *fb;
     size_t fbsize;
     g4_decoder dec;
@@ -248,6 +252,7 @@ typedef struct {
     int gl_tried, got_frame;   /* screen is only taken over once a frame arrives */
     int render;                /* 0 not yet, 1 OpenGL, 2 direct framebuffer (fallback) */
     uint8_t *raw_base; size_t raw_rowbytes;
+    int raw_bpp;               /* the screen's bytes per pixel (may differ from ours) */
     int oc_x, oc_y, oc_w, oc_h; /* where the cursor was last painted (direct mode) */
     uint8_t *cur_px;           /* cursor image, A,R,G,B premultiplied */
 
@@ -316,6 +321,40 @@ static void mark_rows(session *s, int y, int h)
     for (b = y / G4_DIRTY_BAND; h > 0 && b * G4_DIRTY_BAND < y + h; b++) s->dec.dirty_bands[b] = 1;
 }
 
+/* Captured, the screen's colour depth may be changed; it's restored when
+   the display is released. A G3's GPU (8-16 MB) is much happier drawing a
+   16-bit picture on a 16-bit screen. Returns the screen's bits per pixel. */
+static int match_display_depth(session *s)
+{
+    CGDirectDisplayID d = s->display;
+    int bpp = (int)CGDisplayBitsPerPixel(d);
+    if (bpp != s->depth) {
+        boolean_t exact = 0;
+        CFDictionaryRef mode = CGDisplayBestModeForParameters(d, (size_t)(s->depth == 16 ? 16 : 32),
+                                                              (size_t)s->W, (size_t)s->H, &exact);
+        if (mode && exact && CGDisplaySwitchToMode(d, mode) == kCGErrorSuccess) {
+            bpp = (int)CGDisplayBitsPerPixel(d);
+            fprintf(stderr, "screen switched to %d bits per pixel for this session\n", bpp);
+        }
+    }
+    return bpp;
+}
+
+static int pow2_at_least(int n)
+{
+    int p = 1;
+    while (p < n) p <<= 1;
+    return p;
+}
+
+/* texture coordinate for pixel (x, y) of a texture tw x th: pixels for
+   rectangle textures, 0..1 for GL_TEXTURE_2D */
+static void texc(const session *s, int x, int y, int tw, int th)
+{
+    if (s->target == GL_TEXTURE_2D) glTexCoord2f((float)x / (float)tw, (float)y / (float)th);
+    else glTexCoord2i(x, y);
+}
+
 static int gl_setup(session *s, int allow_soft)
 {
     CGLPixelFormatAttribute attrs[] = {
@@ -332,6 +371,8 @@ static int gl_setup(session *s, int allow_soft)
 
     if (CGDisplayCapture(s->display) != kCGErrorSuccess) { fprintf(stderr, "cannot capture display\n"); return -1; }
     CGDisplayHideCursor(s->display);
+    if (mach.gen == 3 && match_display_depth(s) == 16)
+        attrs[7] = (CGLPixelFormatAttribute)16;     /* kCGLPFAColorSize value: match the screen */
 
     if (CGLChoosePixelFormat(attrs, &pf, &npf) != kCGLNoError || !pf) {
         if (!allow_soft) { fprintf(stderr, "no accelerated OpenGL renderer\n"); return -1; }
@@ -341,7 +382,7 @@ static int gl_setup(session *s, int allow_soft)
             kCGLPFAFullScreen,
             kCGLPFADisplayMask, (CGLPixelFormatAttribute)CGDisplayIDToOpenGLDisplayMask(s->display),
             kCGLPFADoubleBuffer,
-            kCGLPFAColorSize, (CGLPixelFormatAttribute)24,
+            kCGLPFAColorSize, attrs[7],
             (CGLPixelFormatAttribute)0
         };
         pf = NULL;
@@ -362,7 +403,6 @@ static int gl_setup(session *s, int allow_soft)
     glOrtho(0, s->W, s->H, 0, -1, 1);                     /* y down, 1 unit = 1 pixel */
     glMatrixMode(GL_MODELVIEW); glLoadIdentity();
     glDisable(GL_DEPTH_TEST); glDisable(GL_DITHER); glDisable(GL_LIGHTING);
-    glEnable(GL_TEXTURE_RECTANGLE_EXT);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
     glClearColor(0, 0, 0, 1);
 
@@ -370,52 +410,77 @@ static int gl_setup(session *s, int allow_soft)
     if (opt_verbose)
         fprintf(stderr, "GL: %s / %s, fence=%d\n", glGetString(GL_RENDERER), glGetString(GL_VERSION), s->fence);
 
-    /* the screen is one rectangle texture: the GPU must support that size
-       (e.g. a Radeon 9600 tops out at 2048 wide, too small for a 30" display) */
-    {
+    /* The screen is one texture. Rectangle textures (Radeon and newer)
+       take the framebuffer as it is, straight from our memory. Older GPUs
+       such as the Rage 128 (G3 iMacs and iBooks) only do power-of-two
+       sizes: use the next one up (1024x1024 for 1024x768) and copy the
+       changed rows into it. */
+    s->fmt_type = s->depth == 16 ? GL_UNSIGNED_SHORT_1_5_5_5_REV : GL_UNSIGNED_INT_8_8_8_8_REV;
+    if (has_ext("GL_EXT_texture_rectangle") || has_ext("GL_ARB_texture_rectangle") ||
+        has_ext("GL_NV_texture_rectangle")) {
         GLint maxrect = 0;
-        if (!has_ext("GL_EXT_texture_rectangle") && !has_ext("GL_ARB_texture_rectangle") &&
-            !has_ext("GL_NV_texture_rectangle")) {
-            fprintf(stderr, "GPU has no rectangle textures\n");
-            return -1;
-        }
+        s->target = GL_TEXTURE_RECTANGLE_EXT;
         glGetIntegerv(GL_MAX_RECTANGLE_TEXTURE_SIZE_EXT, &maxrect);
         if (maxrect < s->W || maxrect < s->H) {
             fprintf(stderr, "screen %dx%d is larger than the GPU's textures (%d)\n", s->W, s->H, (int)maxrect);
             return -1;
         }
+    } else {
+        GLint max2d = 0;
+        s->target = GL_TEXTURE_2D;
+        s->tex_w = pow2_at_least(s->W); s->tex_h = pow2_at_least(s->H);
+        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max2d);
+        if (max2d < s->tex_w || max2d < s->tex_h) {
+            fprintf(stderr, "screen %dx%d needs a %dx%d texture; this GPU's limit is %d\n",
+                    s->W, s->H, s->tex_w, s->tex_h, (int)max2d);
+            return -1;
+        }
+        if (opt_verbose) fprintf(stderr, "no rectangle textures: using a %dx%d texture\n", s->tex_w, s->tex_h);
     }
-
-    /* framebuffer texture backed directly by our memory (zero-copy uploads) */
-    s->fmt_type = s->depth == 16 ? GL_UNSIGNED_SHORT_1_5_5_5_REV : GL_UNSIGNED_INT_8_8_8_8_REV;
+    glEnable(s->target);
     glGenTextures(1, &s->fbtex);
-    glBindTexture(GL_TEXTURE_RECTANGLE_EXT, s->fbtex);
-    if (has_ext("GL_APPLE_texture_range"))
-        glTextureRangeAPPLE(GL_TEXTURE_RECTANGLE_EXT, (GLsizei)s->fbsize, s->fb);
-    /* CACHED, not SHARED: the texture is redrawn on every cursor move, and
-       SHARED would make the GPU re-read it from system memory each time */
-    glTexParameteri(GL_TEXTURE_RECTANGLE_EXT, GL_TEXTURE_STORAGE_HINT_APPLE, GL_STORAGE_CACHED_APPLE);
-    glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, GL_TRUE);
+    glBindTexture(s->target, s->fbtex);
+    glTexParameteri(s->target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(s->target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(s->target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(s->target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexParameteri(GL_TEXTURE_RECTANGLE_EXT, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_RECTANGLE_EXT, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_RECTANGLE_EXT, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_RECTANGLE_EXT, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     while (glGetError() != GL_NO_ERROR) {}
-    glTexImage2D(GL_TEXTURE_RECTANGLE_EXT, 0, s->depth == 16 ? GL_RGB5_A1 : GL_RGBA,
-                 s->W, s->H, 0, GL_BGRA, s->fmt_type, s->fb);
+    if (s->target == GL_TEXTURE_RECTANGLE_EXT) {
+        /* backed directly by our memory (zero-copy uploads) */
+        if (has_ext("GL_APPLE_texture_range"))
+            glTextureRangeAPPLE(GL_TEXTURE_RECTANGLE_EXT, (GLsizei)s->fbsize, s->fb);
+        /* CACHED, not SHARED: the texture is redrawn on every cursor move, and
+           SHARED would make the GPU re-read it from system memory each time */
+        glTexParameteri(GL_TEXTURE_RECTANGLE_EXT, GL_TEXTURE_STORAGE_HINT_APPLE, GL_STORAGE_CACHED_APPLE);
+        glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, GL_TRUE);
+        glTexImage2D(GL_TEXTURE_RECTANGLE_EXT, 0, s->depth == 16 ? GL_RGB5_A1 : GL_RGBA,
+                     s->W, s->H, 0, GL_BGRA, s->fmt_type, s->fb);
+    } else {
+        /* the texture is bigger than the screen: GL keeps its own copy */
+        glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, GL_FALSE);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(s->dec.stride / s->bpp));
+        glTexImage2D(GL_TEXTURE_2D, 0, s->depth == 16 ? GL_RGB5_A1 : GL_RGBA,
+                     s->tex_w, s->tex_h, 0, GL_BGRA, s->fmt_type, NULL);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, s->W, s->H, GL_BGRA, s->fmt_type, s->fb);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    }
     if (glGetError() != GL_NO_ERROR) {
-        fprintf(stderr, "GPU refused the %dx%d screen texture\n", s->W, s->H);
+        fprintf(stderr, "GPU refused the %dx%d screen texture\n",
+                s->target == GL_TEXTURE_2D ? s->tex_w : s->W, s->target == GL_TEXTURE_2D ? s->tex_h : s->H);
         return -1;
     }
 
     /* small ordinary texture for the cursor */
     glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, GL_FALSE);
     glGenTextures(1, &s->curtex);
-    glBindTexture(GL_TEXTURE_RECTANGLE_EXT, s->curtex);
-    glTexParameteri(GL_TEXTURE_RECTANGLE_EXT, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_RECTANGLE_EXT, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, GL_TRUE);
+    glBindTexture(s->target, s->curtex);
+    glTexParameteri(s->target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(s->target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(s->target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(s->target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    s->cur_tw = s->cur_th = 0;
+    glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, s->target == GL_TEXTURE_RECTANGLE_EXT ? GL_TRUE : GL_FALSE);
     return 0;
 }
 
@@ -438,6 +503,7 @@ static void gl_teardown(session *s)
 static void wait_fb_idle(session *s)
 {
     double t0 = now_ms();
+    if (s->target == GL_TEXTURE_2D) return;      /* GL has its own copy */
     if (s->fence) glFinishObjectAPPLE(GL_TEXTURE, s->fbtex);
     else glFinish();
     s->stat_wait_ms += now_ms() - t0;
@@ -445,38 +511,40 @@ static void wait_fb_idle(session *s)
 
 static void upload_rows(session *s, int y0, int y1)
 {
-    glTexSubImage2D(GL_TEXTURE_RECTANGLE_EXT, 0, 0, y0, s->W, y1 - y0, GL_BGRA, s->fmt_type,
+    if (s->target == GL_TEXTURE_2D) glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(s->dec.stride / s->bpp));
+    glTexSubImage2D(s->target, 0, 0, y0, s->W, y1 - y0, GL_BGRA, s->fmt_type,
                     s->fb + (size_t)y0 * s->dec.stride);
+    if (s->target == GL_TEXTURE_2D) glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     s->stat_upload_kb += (double)(y1 - y0) * s->dec.stride / 1024.0;
 }
 
 static void draw(session *s)
 {
     double t0 = now_ms(), t1;
-    glBindTexture(GL_TEXTURE_RECTANGLE_EXT, s->fbtex);
+    glBindTexture(s->target, s->fbtex);
     if (s->dec.dirty_y1 > s->dec.dirty_y0) {
-        glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, GL_TRUE);
+        glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, s->target == GL_TEXTURE_RECTANGLE_EXT ? GL_TRUE : GL_FALSE);
         for_each_dirty_run(s, upload_rows);
         g4dec_reset_dirty(&s->dec);
     }
     glDisable(GL_BLEND);
     glBegin(GL_QUADS);
-    glTexCoord2i(0, 0);         glVertex2i(0, 0);
-    glTexCoord2i(s->W, 0);      glVertex2i(s->W, 0);
-    glTexCoord2i(s->W, s->H);   glVertex2i(s->W, s->H);
-    glTexCoord2i(0, s->H);      glVertex2i(0, s->H);
+    texc(s, 0, 0, s->tex_w, s->tex_h);         glVertex2i(0, 0);
+    texc(s, s->W, 0, s->tex_w, s->tex_h);      glVertex2i(s->W, 0);
+    texc(s, s->W, s->H, s->tex_w, s->tex_h);   glVertex2i(s->W, s->H);
+    texc(s, 0, s->H, s->tex_w, s->tex_h);      glVertex2i(0, s->H);
     glEnd();
 
     if (!s->hw && s->cur_vis && s->cur_w > 0) {
         int x = s->cur_x - s->cur_hx, y = s->cur_y - s->cur_hy;
-        glBindTexture(GL_TEXTURE_RECTANGLE_EXT, s->curtex);
+        glBindTexture(s->target, s->curtex);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);         /* premultiplied */
         glBegin(GL_QUADS);
-        glTexCoord2i(0, 0);               glVertex2i(x, y);
-        glTexCoord2i(s->cur_w, 0);        glVertex2i(x + s->cur_w, y);
-        glTexCoord2i(s->cur_w, s->cur_h); glVertex2i(x + s->cur_w, y + s->cur_h);
-        glTexCoord2i(0, s->cur_h);        glVertex2i(x, y + s->cur_h);
+        texc(s, 0, 0, s->cur_tw, s->cur_th);               glVertex2i(x, y);
+        texc(s, s->cur_w, 0, s->cur_tw, s->cur_th);        glVertex2i(x + s->cur_w, y);
+        texc(s, s->cur_w, s->cur_h, s->cur_tw, s->cur_th); glVertex2i(x + s->cur_w, y + s->cur_h);
+        texc(s, 0, s->cur_h, s->cur_tw, s->cur_th);        glVertex2i(x, y + s->cur_h);
         glEnd();
     }
     t1 = now_ms();
@@ -489,8 +557,26 @@ static void draw(session *s)
 static void upload_cursor(session *s)
 {
     if (!s->cur_px || s->cur_w <= 0) return;
-    glBindTexture(GL_TEXTURE_RECTANGLE_EXT, s->curtex);
+    glBindTexture(s->target, s->curtex);
     glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, GL_FALSE);
+    if (s->target == GL_TEXTURE_2D) {
+        int tw = pow2_at_least(s->cur_w), th = pow2_at_least(s->cur_h);
+        if (tw != s->cur_tw || th != s->cur_th) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, NULL);
+            s->cur_tw = tw; s->cur_th = th;
+        }
+        /* clear the unused part so it blends as transparent */
+        {
+            uint8_t *z = (uint8_t *)calloc((size_t)tw * th, 4);
+            if (z) {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tw, th, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, z);
+                free(z);
+            }
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)s->cur_w, (GLsizei)s->cur_h,
+                        GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, s->cur_px);
+        return;
+    }
     glTexImage2D(GL_TEXTURE_RECTANGLE_EXT, 0, GL_RGBA, (GLsizei)s->cur_w, (GLsizei)s->cur_h, 0,
                  GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, s->cur_px);
     glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, GL_TRUE);
@@ -529,14 +615,22 @@ static int raw_setup(session *s)
     CGDirectDisplayID d = s->display;
     if (CGDisplayCapture(d) != kCGErrorSuccess) return -1;
     CGDisplayHideCursor(d);
+    {
+        int bpp = match_display_depth(s);
+        s->raw_bpp = bpp / 8;
+    }
     s->raw_base = (uint8_t *)CGDisplayBaseAddress(d);
     s->raw_rowbytes = CGDisplayBytesPerRow(d);
-    if (!s->raw_base || (int)CGDisplayBitsPerPixel(d) != s->depth ||
+    /* 16- and 32-bit screens both work: a different depth is converted */
+    if (!s->raw_base || (s->raw_bpp != 2 && s->raw_bpp != 4) ||
         (int)CGDisplayPixelsWide(d) != s->W || (int)CGDisplayPixelsHigh(d) != s->H) {
-        fprintf(stderr, "direct framebuffer not usable (%d bits per pixel)\n", (int)CGDisplayBitsPerPixel(d));
+        fprintf(stderr, "direct framebuffer not usable (%dx%d, %d bits per pixel)\n",
+                (int)CGDisplayPixelsWide(d), (int)CGDisplayPixelsHigh(d), (int)CGDisplayBitsPerPixel(d));
         s->raw_base = NULL;
         return -1;
     }
+    if (s->raw_bpp != s->bpp)
+        fprintf(stderr, "converting %d-bit pictures for the %d-bit screen\n", s->depth, s->raw_bpp * 8);
     s->oc_w = 0;
     s->dec.dirty_y0 = 0; s->dec.dirty_y1 = s->H;    /* paint everything once */
     mark_rows(s, 0, s->H);
@@ -544,12 +638,50 @@ static int raw_setup(session *s)
     return 0;
 }
 
+/* one row from our format to the screen's when they differ, through a
+   small buffer so video memory gets whole 8-byte writes */
+static void raw_convert_row(session *s, uint8_t *dst, const uint8_t *src)
+{
+    double bufd[128];                        /* 256 pixels at 32-bit, 512 at 16-bit; */
+    uint8_t *buf = (uint8_t *)bufd;          /* 8-byte aligned for vram_copy */
+    int x = 0, n, i;
+    while (x < s->W) {
+        n = s->W - x;
+        if (s->raw_bpp == 4) {                         /* x1555 -> xRGB8888 (big-endian bytes) */
+            if (n > 256) n = 256;
+            for (i = 0; i < n; i++) {
+                unsigned v = ((unsigned)src[2 * (x + i)] << 8) | src[2 * (x + i) + 1];
+                unsigned r = (v >> 10) & 31, g = (v >> 5) & 31, b = v & 31;
+                buf[4 * i] = 0xFF;
+                buf[4 * i + 1] = (uint8_t)(r << 3 | r >> 2);
+                buf[4 * i + 2] = (uint8_t)(g << 3 | g >> 2);
+                buf[4 * i + 3] = (uint8_t)(b << 3 | b >> 2);
+            }
+            vram_copy(dst + (size_t)x * 4, buf, (size_t)n * 4);
+        } else {                                       /* xRGB8888 -> x1555 */
+            if (n > 512) n = 512;
+            for (i = 0; i < n; i++) {
+                const uint8_t *p = src + 4 * (x + i);
+                unsigned v = 0x8000u | ((unsigned)(p[1] >> 3) << 10) | ((unsigned)(p[2] >> 3) << 5) | (p[3] >> 3);
+                buf[2 * i] = (uint8_t)(v >> 8);
+                buf[2 * i + 1] = (uint8_t)v;
+            }
+            vram_copy(dst + (size_t)x * 2, buf, (size_t)n * 2);
+        }
+        x += n;
+    }
+}
+
 static void raw_copy_rows(session *s, int y0, int y1)
 {
     size_t rowb = (size_t)s->W * s->bpp;
     int y;
-    for (y = y0; y < y1; y++)
-        vram_copy(s->raw_base + (size_t)y * s->raw_rowbytes, s->fb + (size_t)y * s->dec.stride, rowb);
+    for (y = y0; y < y1; y++) {
+        uint8_t *dst = s->raw_base + (size_t)y * s->raw_rowbytes;
+        const uint8_t *src = s->fb + (size_t)y * s->dec.stride;
+        if (s->raw_bpp == s->bpp) vram_copy(dst, src, rowb);
+        else raw_convert_row(s, dst, src);
+    }
     s->stat_upload_kb += (double)(y1 - y0) * rowb / 1024.0;
 }
 
@@ -576,7 +708,7 @@ static void raw_draw(session *s)
                 const uint8_t *src = s->cur_px + ((size_t)cy * s->cur_w + cx) * 4;
                 unsigned a = src[0];
                 if (sx < 0 || sx >= s->W || a == 0) continue;
-                if (s->bpp == 4) {
+                if (s->raw_bpp == 4) {
                     uint8_t *d = s->raw_base + (size_t)sy * s->raw_rowbytes + (size_t)sx * 4;
                     d[1] = (uint8_t)(src[1] + d[1] * (255 - a) / 255);
                     d[2] = (uint8_t)(src[2] + d[2] * (255 - a) / 255);
