@@ -71,7 +71,7 @@ final class HostGroup {
     private func add(name: String?) {
         var cfg = base
         cfg.g4Name = name
-        cfg.fps = fps; cfg.mirror = isMirror; cfg.smoothVideo = smoothVideo; cfg.fastVideo = fastVideo
+        cfg.fps = fps; cfg.mirror = savedMirror(name); cfg.smoothVideo = smoothVideo; cfg.fastVideo = fastVideo
         let h = Host(config: cfg)
         hosts.append(h)
         if let name, !single {
@@ -96,10 +96,29 @@ final class HostGroup {
         onRemove?(h)
     }
 
+    // MARK: settings for one PowerPC Mac
+
+    private static func mirrorKey(_ name: String) -> String { "mirror.\(name)" }
+
+    /// Extend or mirror, chosen per PowerPC Mac (a Mac not chosen for yet
+    /// gets the old all-Macs setting, or --mirror / --extend).
+    private func savedMirror(_ name: String?) -> Bool {
+        guard let name, !single,
+              let v = UserDefaults.standard.object(forKey: Self.mirrorKey(name)) as? Bool else { return isMirror }
+        return v
+    }
+
+    func setMirror(_ on: Bool, for h: Host) {
+        h.setMirror(on)
+        if let name = h.macName { UserDefaults.standard.set(on, forKey: Self.mirrorKey(name)) }
+    }
+
+    /// Disconnect (its display is removed) or connect one PowerPC Mac.
+    func setEnabled(_ on: Bool, for h: Host) { h.setEnabled(on) }
+
     // MARK: settings for all
 
     func setEnabled(_ on: Bool) { enabled = on; hosts.forEach { $0.setEnabled(on) } }
-    func setMirror(_ on: Bool) { isMirror = on; hosts.forEach { $0.setMirror(on) } }
     func setSmoothVideo(_ on: Bool) { smoothVideo = on; hosts.forEach { $0.setSmoothVideo(on) } }
     func setFastVideo(_ on: Bool) { fastVideo = on; hosts.forEach { $0.setFastVideo(on) } }
     func setFPS(_ f: Int) { fps = f; hosts.forEach { $0.setFPS(f) } }

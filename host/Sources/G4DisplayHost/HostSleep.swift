@@ -19,6 +19,22 @@ extension Host {
         return [UInt8](d)
     }
 
+    /// Its network hardware address is known, so it can be woken from here.
+    var canWake: Bool { rememberedMAC != nil }
+
+    /// Main thread: the Wake button. Knocks a few times with Wake-on-LAN; the
+    /// connection comes back by itself once it's awake.
+    func wakeNow() {
+        guard let mac = rememberedMAC else { return }
+        log("waking “\(cfg.g4Name ?? "the PowerPC Mac")” (Wake-on-LAN)")
+        DispatchQueue.global(qos: .utility).async {
+            for _ in 0..<5 {
+                _ = g4_wake_on_lan(mac)
+                Thread.sleep(forTimeInterval: 1)
+            }
+        }
+    }
+
     /// Main thread: this Mac or its displays are going to sleep.
     /// releaseDisplay: also remove the virtual display while asleep (lid
     /// closed: otherwise macOS treats it as an external monitor and keeps a

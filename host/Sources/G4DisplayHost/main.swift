@@ -15,8 +15,9 @@ func usage() -> Never {
                         (e.g. a BetterDisplay virtual screen; list IDs with --list)
       --fps N           capture rate cap (default 60)
       --inflight N      frames allowed in flight before waiting for the PowerPC Mac (default 2)
-      --mirror          mirror the main display instead of adding one
-      --extend          add a display (default, unless Mirror was chosen in the app)
+      --mirror          mirror the main display instead of adding one (for PowerPC Macs
+                        not yet set to Extend or Mirror in the app, or with --name)
+      --extend          add a display (the default)
       --sharp-video     send video regions losslessly (turns off Smoother Video)
       --full-res-video  don't adapt video quality (always 4:2:2, full resolution)
       -v                print throughput / latency stats every 5 s

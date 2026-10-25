@@ -81,7 +81,7 @@ keychain and in `~/Library/Application Support/PowerPC Display/pairing` on
 the PowerPC Mac. Screen data itself isn't encrypted (too costly for a G3/G4);
 pairing controls who can get it.
 
-To start over: **Forget Paired PowerPC Macs…** (menu bar or app menu) on the
+To start over: **Forget Paired PowerPC Macs…** (app menu) on the
 Apple Silicon Mac, **Forget Paired Macs…** in the app menu on the PowerPC Mac.
 
 Both apps need this version: an older PowerPC app is told to update.
@@ -147,22 +147,33 @@ menu bar icon. The first launch asks for **Screen Recording** permission and,
 the first time it looks for the PowerPC Mac, **Local Network** access; allow both,
 then quit and reopen it.
 
-The window and menu show:
+The window is laid out like Bluetooth in System Settings:
 
-- status: looking for the PowerPC Mac / connected to it (by its computer name) / disconnected, with
-  what to do next
-- live frame rate, KB/s and latency while connected
-- **Connect / Disconnect**: disconnecting also removes the virtual display
-- **Mode: Extend / Mirror**: Extend adds the PowerPC Mac as another display; Mirror
-  shows your main display on the PowerPC Mac, scaled down and letterboxed to fit
-- **Arrange Displays…**: opens System Settings › Displays to place it
-- **Frame rate**: 60 / 30 / 20 / 15 fps (remembered)
-- **Smoother video** (on by default): areas that change at video rate are
-  sent as 4:2:2 YCbCr, half the data, with slightly softer colour in the
-  video. Text and still areas are always exact, and a video that stops is
-  resent losslessly within about a third of a second. Needs Millions of
-  colours on the PowerPC Mac; turn it off for pixel-exact video.
-- **Launch at Login**
+- **My PowerPC Macs**: the ones connected (or pairing), with a green dot.
+  **Other PowerPC Macs**: ones it knows that aren't connected right now,
+  with when they were last connected.
+- Click a Mac for its details: live frame rate, KB/s, latency and video
+  quality, and what you can do with it:
+  - **Show: Extend / Mirror**, per Mac (remembered). Extend adds it as
+    another display; Mirror shows your main display on it, scaled down and
+    letterboxed to fit.
+  - **Arrange Displays…** opens System Settings › Displays to place it.
+  - **Disconnect / Connect**: disconnecting also removes its display.
+  - **Wake** (a Mac that's asleep and has connected before) sends it
+    Wake-on-LAN. **Remove from List…** stops looking for it.
+  The same actions are on each row's right-click menu.
+- **Video**: frame rate (60 / 30 / 20 / 15 fps, remembered), **Smoother
+  video** (on by default: areas that change at video rate are sent as 4:2:2
+  YCbCr, half the data, with slightly softer colour in the video; text and
+  still areas are always exact, and a video that stops is resent losslessly
+  within about a third of a second; needs Millions of colours on the PowerPC
+  Mac) and **Match video quality to the network**.
+- **General**: **Match this Mac's brightness**, **Launch at login**.
+- **Check for Updates…** at the bottom.
+
+The menu bar menu works like the Wi-Fi menu: a line per PowerPC Mac with its
+state (✓ when connected), and a submenu for each with the same per-Mac
+actions, then the video and brightness switches.
 
 Run the app rather than the bare binary from Xcode: without the app bundle,
 macOS can block Bonjour (Local Network privacy) and Launch at Login is
@@ -203,10 +214,11 @@ one (make it the PowerPC Mac's resolution, non-HiDPI).
 
 Every PowerPC Mac running PowerPC Display that the Apple Silicon Mac finds
 becomes its own extra display (or mirror), each with its own row in the
-status window and menu. They're remembered, so a known one reconnects at its
-last address even when Bonjour isn't answering. **Remove** (shown while one
-isn't connected) stops looking for it, e.g. an old VM; it comes back if it
-appears on the network again.
+status window and menu, and its own Extend/Mirror choice. They're
+remembered, so a known one reconnects at its last address even when Bonjour
+isn't answering. **Remove from List…** (for one that isn't connected) stops
+looking for it, e.g. an old VM; it comes back if it appears on the network
+again.
 
 ## Brightness
 
@@ -403,7 +415,7 @@ host/Sources/G4DisplayHost/    Apple Silicon app:
     Pairing.swift         HELLO, pairing, keychain, per-connection proof
     HostCapture.swift     virtual display, ScreenCaptureKit, changed areas → encoder
     HostSender.swift      encoding, flow control, pings, ACKs, cursor messages
-    AppController/MenuBar window and menu bar UI;  Cursor.swift  pointer tracking
+    AppController, StatusWindow, MenuBar  window and menu bar UI;  Cursor.swift  pointer tracking
 host/Sources/CCodec/g4auth.c   pairing crypto (X25519 + HMAC-SHA512), shared by both Macs
 host/Sources/CCodec/g4nacl.c   TweetNaCl (public domain), vendored; RFC test vectors in test/
 host/build-app.sh         builds PowerPC Display.app (Apple Silicon side)

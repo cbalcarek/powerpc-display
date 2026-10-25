@@ -27,32 +27,20 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         button.toolTip = model.title
     }
 
-    // rebuilt every time it opens, so it's always current
+    // rebuilt every time it opens, so it's always current. Like the Wi-Fi
+    // menu: a line per PowerPC Mac, each with its own submenu.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        if model.peers.isEmpty { menu.addItem(info("Looking for your PowerPC Mac…")) }
-        for peer in model.peers {
-            menu.addItem(info(peer.title))
-            if case .connected(_, let w, let h, let d) = peer.status {
-                menu.addItem(info("    \(w) × \(h) · \(d)-bit colour"))
-                if let s = peer.liveStats(now: nowMs()) {
-                    menu.addItem(info(String(format: "    %.0f fps · %.0f KB/s · %.0f ms to screen", s.fps, s.kbps, s.latencyMs)))
-                } else {
-                    menu.addItem(info("    Idle — nothing changing"))
-                }
-            }
+        let n = model.connected.count
+        menu.addItem(info(n == 0 ? "PowerPC Display — none connected" : "PowerPC Display — \(n) connected"))
+        menu.addItem(.separator())
+
+        if model.peers.isEmpty { menu.addItem(info("Looking for PowerPC Macs…")) }
+        for peer in model.peers.sorted(by: { $0.isActive && !$1.isActive }) {
+            menu.addItem(peerItem(peer))
         }
 
         menu.addItem(.separator())
-        menu.addItem(action("Show Status Window", #selector(showWindow)))
-        menu.addItem(action(model.enabled ? "Disconnect" : "Connect", #selector(toggleEnabled)))
-        let ext = action("Extend Display", #selector(setExtend))
-        ext.state = model.mirror ? .off : .on
-        menu.addItem(ext)
-        let mir = action("Mirror Main Display", #selector(setMirror))
-        mir.state = model.mirror ? .on : .off
-        menu.addItem(mir)
-        menu.addItem(action("Arrange Displays…", #selector(openDisplays)))
         let sv = action("Smoother Video", #selector(toggleSmooth))
         sv.state = model.smoothVideo ? .on : .off
         sv.toolTip = "Areas playing video are sent with half the data (slightly softer colours)."
@@ -80,9 +68,60 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(fpsItem)
 
         menu.addItem(.separator())
-        menu.addItem(action("Forget Paired PowerPC Macs…", #selector(forgetPairings)))
+        menu.addItem(action("Show Status Window…", #selector(showWindow)))
         menu.addItem(action("Check for Updates…", #selector(checkUpdates)))
+        menu.addItem(.separator())
         menu.addItem(action("Quit PowerPC Display", #selector(quit), key: "q"))
+    }
+
+    /// One PowerPC Mac: its name and state, with a submenu of what you can do.
+    private func peerItem(_ peer: PeerModel) -> NSMenuItem {
+        var status = peer.shortStatus
+        if peer.isConnected, let s = peer.liveStats(now: nowMs()) { status = String(format: "%.0f fps", s.fps) }
+        let it = NSMenuItem(title: peer.displayName, action: nil, keyEquivalent: "")
+        if #available(macOS 14.4, *) {
+            it.subtitle = status
+        } else {
+            it.title = "\(peer.displayName) — \(status)"
+        }
+        it.image = NSImage(systemSymbolName: peer.deviceSymbol, accessibilityDescription: nil)
+        it.state = peer.isConnected ? .on : .off
+
+        let sub = NSMenu()
+        sub.addItem(info(peer.subtitle))
+        if peer.isConnected, let s = peer.liveStats(now: nowMs()) {
+            sub.addItem(info(String(format: "%.0f fps · %.0f KB/s · %.0f ms to screen", s.fps, s.kbps, s.latencyMs)))
+        }
+        sub.addItem(.separator())
+        if peer.isConnected {
+            sub.addItem(peerAction("Disconnect", #selector(disconnect(_:)), peer))
+        } else if peer.isPaused {
+            sub.addItem(peerAction("Connect", #selector(connect(_:)), peer))
+        }
+        if !peer.isActive, peer.host.canWake, !peer.isPaused {
+            sub.addItem(peerAction("Wake", #selector(wake(_:)), peer))
+        }
+        if !peer.isPairing {
+            let ext = peerAction("Extend Display", #selector(setExtend(_:)), peer)
+            ext.state = peer.mirror ? .off : .on
+            sub.addItem(ext)
+            let mir = peerAction("Mirror Main Display", #selector(setMirror(_:)), peer)
+            mir.state = peer.mirror ? .on : .off
+            sub.addItem(mir)
+        }
+        if peer.isConnected, !peer.mirror {
+            sub.addItem(action("Arrange Displays…", #selector(openDisplays)))
+        }
+        sub.addItem(.separator())
+        sub.addItem(peerAction("Show Details…", #selector(showDetails(_:)), peer))
+        it.submenu = sub
+        return it
+    }
+
+    private func peerAction(_ title: String, _ sel: Selector, _ peer: PeerModel) -> NSMenuItem {
+        let it = action(title, sel)
+        it.representedObject = peer
+        return it
     }
 
     private func info(_ text: String) -> NSMenuItem {
@@ -97,16 +136,20 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         return it
     }
 
+    private func peer(_ sender: NSMenuItem) -> PeerModel? { sender.representedObject as? PeerModel }
+
     @objc private func showWindow() { controller.showWindow() }
-    @objc private func toggleEnabled() { controller.setEnabled(!model.enabled) }
+    @objc private func showDetails(_ sender: NSMenuItem) { if let p = peer(sender) { controller.select(p) } }
+    @objc private func connect(_ sender: NSMenuItem) { if let p = peer(sender) { controller.setConnected(true, p) } }
+    @objc private func disconnect(_ sender: NSMenuItem) { if let p = peer(sender) { controller.setConnected(false, p) } }
+    @objc private func wake(_ sender: NSMenuItem) { if let p = peer(sender) { controller.wake(p) } }
+    @objc private func setExtend(_ sender: NSMenuItem) { if let p = peer(sender) { controller.setMirror(false, p) } }
+    @objc private func setMirror(_ sender: NSMenuItem) { if let p = peer(sender) { controller.setMirror(true, p) } }
     @objc private func setFPS(_ sender: NSMenuItem) { controller.setFPS(sender.tag) }
     @objc private func openDisplays() { controller.openDisplaySettings() }
-    @objc private func setExtend() { controller.setMirror(false) }
-    @objc private func setMirror() { controller.setMirror(true) }
     @objc private func toggleSmooth() { controller.setSmoothVideo(!model.smoothVideo) }
     @objc private func toggleFast() { controller.setFastVideo(!model.fastVideo) }
     @objc private func toggleBrightness() { controller.setMatchBrightness(!model.matchBrightness) }
-    @objc private func forgetPairings() { controller.forgetPairings() }
     @objc private func checkUpdates() { controller.checkForUpdates() }
     @objc private func quit() { NSApp.terminate(nil) }
 }
