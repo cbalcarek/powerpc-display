@@ -58,6 +58,9 @@ enum {
 /* AUTH modes */
 #define G4_AUTH_KNOWN  1          /* + 32-byte host tag                     */
 #define G4_AUTH_PAIR   2          /* + 32-byte host public key (pairing)    */
+/* AUTH byte 1: flags (older PowerPC apps ignore it) */
+#define G4_AUTH_FLAG_NOSCREEN 0x01 /* the host has no screen to show the code on:
+                                      the person at the PowerPC Mac decides alone */
 
 /* sizes of the v2 handshake messages' payloads */
 #define G4_HELLO_V2_LEN  80

@@ -162,18 +162,35 @@ extension Host {
             log("pairing with \(name) failed (bad key)")
             return false
         }
+        // Nobody can see this Mac's screen (no monitor, and no PowerPC Mac
+        // showing it): the person at the PowerPC Mac decides alone. Only
+        // while nothing is paired yet or soon after launch, so a stranger on
+        // the network can't pair with a Mac that's been running for a while.
+        let unattended = !DispatchQueue.main.sync { Host.screenVisible() }
+        if unattended, !PairingStore.pairedNames.isEmpty,
+           nowMs() - Host.launchedAt > Host.unattendedPairingWindowMs {
+            log("\(name) wants to pair, but this Mac has no screen to ask on. Quit and reopen PowerPC Display (or restart this Mac), then pair within 10 minutes.")
+            post(.cantReach("“\(name)” wants to pair. With no screen here, pairing works for 10 minutes after PowerPC Display opens: reopen it or restart this Mac, then pair."))
+            return false
+        }
+
         auth[0] = UInt8(G4_AUTH_PAIR)
+        if unattended { auth[1] = UInt8(G4_AUTH_FLAG_NOSCREEN) }
         auth.replaceSubrange(36..<68, with: pub)
         guard writeAll(sock, message(type: Int(G4_MSG_AUTH), payload: auth)) else { return false }
 
         let code = g4_pair_code(key)
-        log("\(name) wants to pair (code \(String(format: "%06u", code)))")
-        post(.pairing(name: name, code: code))
-        guard askToPair(name: name, code: code) else {
-            log("pairing with \(name) declined here")
-            declinedPairing.insert(clientHex)
-            post(.cantReach("Not paired with “\(name)”."))
-            return false
+        if unattended {
+            log("\(name) wants to pair; no screen here, so it's up to the person at \(name) (click Pair there)")
+        } else {
+            log("\(name) wants to pair (code \(String(format: "%06u", code)))")
+            post(.pairing(name: name, code: code))
+            guard askToPair(name: name, code: code) else {
+                log("pairing with \(name) declined here")
+                declinedPairing.insert(clientHex)
+                post(.cantReach("Not paired with “\(name)”."))
+                return false
+            }
         }
         post(.pairing(name: name, code: code, waitingForOtherMac: true))
         guard let reply = readMessage(sock, timeoutMs: 120_000, maxLen: 64) else {

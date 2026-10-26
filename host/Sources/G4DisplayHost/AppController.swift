@@ -16,7 +16,7 @@ final class PeerModel: ObservableObject, Identifiable {
 
     init(host: Host) {
         self.host = host
-        mirror = host.isMirror
+        mirror = host.mirrorChosen
         if let k = lastConnectedKey { lastConnected = UserDefaults.standard.object(forKey: k) as? Date }
     }
 
@@ -41,6 +41,9 @@ final class PeerModel: ObservableObject, Identifiable {
         return n.contains("book") ? "laptopcomputer" : "desktopcomputer"
     }
 
+    /// mirroring right now (never while headless)
+    var showsMirror: Bool { mirror && !host.isHeadless }
+
     var isConnected: Bool { if case .connected = status { return true }; return false }
     var isPairing: Bool { if case .pairing = status { return true }; return false }
     /// shown under "My PowerPC Macs" (the rest under "Other PowerPC Macs")
@@ -63,7 +66,7 @@ final class PeerModel: ObservableObject, Identifiable {
     /// The line under its name in the list.
     var subtitle: String {
         if case .connected(_, let w, let h, let d) = status {
-            return "\(w) × \(h) · \(d)-bit colour" + (mirror ? " · mirroring" : "")
+            return "\(w) × \(h) · \(d)-bit colour" + (showsMirror ? " · mirroring" : "")
         }
         if let t = lastConnected { return "Last connected " + t.formatted(.relative(presentation: .named)) }
         return name == nil ? "Open PowerPC Display on the PowerPC Mac" : "Not connected yet"
@@ -87,7 +90,7 @@ final class PeerModel: ObservableObject, Identifiable {
                 ? "Now click Pair on the PowerPC Mac (it shows \(c))."
                 : "Both Macs should show the code \(c). Pair only if they match."
         case .connected(_, let w, let h, _):
-            return mirror ? "Mirroring your main display, scaled to \(w) × \(h)." : "Extending your desktop."
+            return showsMirror ? "Mirroring your main display, scaled to \(w) × \(h)." : "Extending your desktop."
         case .paused:
             return "Its display is removed until you connect again."
         case .needsScreenRecording:
@@ -115,6 +118,10 @@ final class AppModel: ObservableObject {
     @Published var fastVideo = true
     @Published var matchBrightness = true
     @Published var launchAtLogin = false
+    /// "Use as this Mac's display" switch, and whether headless is in effect
+    /// (also when there's no monitor)
+    @Published var headlessChosen = false
+    @Published var headless = false
 
     init(fps: Int) { self.fps = fps }
 
@@ -167,6 +174,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         let mb = UserDefaults.standard.object(forKey: Self.brightKey) as? Bool ?? true
         model.matchBrightness = mb
         hosts.setMatchBrightness(mb)
+        model.headlessChosen = hosts.headlessChosen
+        model.headless = hosts.isHeadless
+        hosts.onHeadlessChange = { [weak self] in
+            guard let self else { return }
+            self.model.headless = self.hosts.isHeadless
+            self.model.headlessChosen = self.hosts.headlessChosen
+        }
     }
 
     // MARK: - lifecycle
@@ -288,7 +302,22 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// Connect or disconnect one PowerPC Mac.
     func setConnected(_ on: Bool, _ peer: PeerModel) {
+        if !on, model.headless, model.connected.count == 1, peer.isConnected {
+            // it's the only screen: say how to get it back
+            let a = NSAlert()
+            a.messageText = "Disconnect “\(peer.displayName)”?"
+            a.informativeText = "It's this Mac's only display. To connect again, plug in a monitor or use Screen Sharing from another Mac, or quit and reopen PowerPC Display."
+            a.addButton(withTitle: "Disconnect")
+            a.addButton(withTitle: "Cancel")
+            guard a.runModal() == .alertFirstButtonReturn else { return }
+        }
         hosts.setEnabled(on, for: peer.host)
+    }
+
+    func setHeadless(_ on: Bool) {
+        hosts.setHeadless(on)
+        model.headlessChosen = on
+        model.headless = hosts.isHeadless
     }
 
     /// Extend or mirror, per PowerPC Mac.

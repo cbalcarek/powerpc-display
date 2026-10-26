@@ -64,6 +64,8 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     /// Called on the main thread.
     var onStatus: ((Status) -> Void)?
     var onStats: ((Stats) -> Void)?
+    /// a virtual display was just created (main thread)
+    var onDisplayCreated: ((CGDirectDisplayID) -> Void)?
 
     // --- settings shared with the UI (guarded by lock) ---
     let lock = NSLock()
@@ -76,6 +78,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var _stopped = false                       // forgotten: this Host is finished
     var _releaseWhileAsleep = false            // lid closed: remove the virtual display too
     var _peerSleeping = false                  // ...and we told the PowerPC Mac to sleep too
+    var _headless = false                      // this Mac has no monitor: keep our display, no mirroring
     var _stream: SCStream?
     var _scConfig: SCStreamConfiguration?
     let wake = DispatchSemaphore(value: 0)
@@ -158,6 +161,12 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
 
     var isEnabled: Bool { lock.lock(); defer { lock.unlock() }; return _enabled }
     var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return _stopped }
+    /// Connected right now (any thread).
+    var isConnectedNow: Bool {
+        statusLock.lock(); defer { statusLock.unlock() }
+        if case .connected = lastStatus { return true }
+        return false
+    }
     /// Its virtual display (main thread).
     var virtualDisplayID: CGDirectDisplayID? { vdisplay?.displayID }
 
@@ -172,7 +181,10 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
         wake.signal()
     }
     var fps: Int { lock.lock(); defer { lock.unlock() }; return _fps }
-    var isMirror: Bool { lock.lock(); defer { lock.unlock() }; return _mirror }
+    /// mirroring is off while headless (there's no other screen to mirror)
+    var isMirror: Bool { lock.lock(); defer { lock.unlock() }; return _mirror && !_headless }
+    /// Extend or Mirror as chosen (even while headless)
+    var mirrorChosen: Bool { lock.lock(); defer { lock.unlock() }; return _mirror }
     var smoothVideo: Bool { lock.lock(); defer { lock.unlock() }; return _smoothVideo }
     var fastVideo: Bool { lock.lock(); defer { lock.unlock() }; return _fastVideo }
 
@@ -275,6 +287,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
                 announced = false
                 continue
             }
+            prepareHeadlessDisplay()
             guard let conn = connectToG4(announced: &announced) else {
                 sleep(cfg.g4Address == nil ? 1 : 2)
                 continue
@@ -298,6 +311,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
 
             (W, H, depth, slots, widthMM) = (hello.width, hello.height, hello.depth, hello.slots, hello.widthMM)
             log("\(name) connected: \(W)x\(H), \(depth)-bit, \(slots) cache tiles\(widthMM > 0 ? ", \(widthMM) mm wide" : "")")
+            rememberGeometry()
 
             let mirroring = isMirror
             if mirroring {

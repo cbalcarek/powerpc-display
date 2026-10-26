@@ -52,6 +52,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         fv.indentationLevel = 1
         fv.toolTip = "Video is sent as sharp as the connection allows: lossless, softer colour, or half resolution."
         menu.addItem(fv)
+        let hl = model.headless && !model.headlessChosen
+            ? info("Use as Main Display (no monitor here)")
+            : action("Use as Main Display", #selector(toggleHeadless))
+        hl.state = model.headless ? .on : .off
+        hl.toolTip = "For a Mac with no monitor: the PowerPC Mac is its main display, and its display stays while it's away."
+        menu.addItem(hl)
         let br = action("Match Brightness", #selector(toggleBrightness))
         br.state = model.matchBrightness ? .on : .off
         menu.addItem(br)
@@ -101,7 +107,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         if !peer.isActive, peer.host.canWake, !peer.isPaused {
             sub.addItem(peerAction("Wake", #selector(wake(_:)), peer))
         }
-        if !peer.isPairing {
+        if !peer.isPairing, !model.headless {
             let ext = peerAction("Extend Display", #selector(setExtend(_:)), peer)
             ext.state = peer.mirror ? .off : .on
             sub.addItem(ext)
@@ -109,7 +115,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             mir.state = peer.mirror ? .on : .off
             sub.addItem(mir)
         }
-        if peer.isConnected, !peer.mirror {
+        if peer.isConnected, !peer.showsMirror {
             sub.addItem(action("Arrange Displays…", #selector(openDisplays)))
         }
         sub.addItem(.separator())
@@ -149,6 +155,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func openDisplays() { controller.openDisplaySettings() }
     @objc private func toggleSmooth() { controller.setSmoothVideo(!model.smoothVideo) }
     @objc private func toggleFast() { controller.setFastVideo(!model.fastVideo) }
+    @objc private func toggleHeadless() { controller.setHeadless(!model.headlessChosen) }
     @objc private func toggleBrightness() { controller.setMatchBrightness(!model.matchBrightness) }
     @objc private func checkUpdates() { controller.checkForUpdates() }
     @objc private func quit() { NSApp.terminate(nil) }

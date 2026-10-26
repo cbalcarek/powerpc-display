@@ -220,6 +220,41 @@ isn't answering. **Remove from List…** (for one that isn't connected) stops
 looking for it, e.g. an old VM; it comes back if it appears on the network
 again.
 
+## A Mac with no monitor (headless)
+
+A Mac mini (or any Mac with no monitor) can use a PowerPC Mac as its only
+screen. **Use as this Mac's main display** (General, or the menu bar menu)
+does this, and it turns on by itself when no monitor is connected:
+
+- the PowerPC Mac's display is created as soon as PowerPC Display opens, at
+  the size it had last time, so it's there before the PowerPC Mac connects
+  and stays while it's away (windows don't get moved around)
+- it becomes the main display (menu bar and Dock). With several PowerPC
+  Macs, the first one to appear is the main display and the others extend it
+- Mirror is off (there's no other screen to mirror)
+- disconnecting the only display asks first, since you'd need a monitor or
+  Screen Sharing to get it back
+
+**Pairing with no screen.** Normally both Macs show a code and you click
+Pair on each. A Mac with no screen can't show its code, so the person at
+the PowerPC Mac decides alone: its window says a Mac with no screen wants to
+use it, and you click **Pair** there. So that a stranger on the network
+can't pair with it later, this only works while nothing is paired yet, or
+within 10 minutes of PowerPC Display opening (quit and reopen it, or restart
+the Mac, to pair another one). When a PowerPC Mac is already showing the
+screen, pairing asks on that screen as usual.
+
+**Setting up a Mac mini once:**
+
+1. Turn on **automatic login** (System Settings › Users & Groups). PowerPC
+   Display starts at login, so nothing shows before that; automatic login
+   needs FileVault off. Startup and the login screen never appear on the
+   PowerPC Mac.
+2. Once, with a monitor or Screen Sharing: open PowerPC Display, allow
+   **Screen Recording** and **Local Network**, and turn on **Launch at login**.
+3. Use the mini's own keyboard and mouse: the PowerPC Mac only shows the
+   picture.
+
 ## Brightness
 
 **Match this Mac's brightness** (on by default): PowerPC Macs with a

@@ -38,7 +38,7 @@ struct StatusView: View {
             }
 
             if let selected {
-                PeerDetail(peer: selected, controller: controller)
+                PeerDetail(peer: selected, headless: model.headless, controller: controller)
                     .id(selected.id)
             }
 
@@ -67,6 +67,14 @@ struct StatusView: View {
             }
 
             BoxSection("General") {
+                SwitchRow("Use as this Mac's main display",
+                          caption: model.headless && !model.headlessChosen
+                              ? "On while no monitor is connected to this Mac"
+                              : "For a Mac with no monitor, like a Mac mini",
+                          isOn: Binding(get: { model.headless }, set: { controller.setHeadless($0) }))
+                    .disabled(model.headless && !model.headlessChosen)
+                    .help("The PowerPC Mac becomes this Mac's main display (menu bar and Dock), and its display stays while it's away, so windows don't move. Turns on by itself when there's no monitor.")
+                BoxDivider()
                 SwitchRow("Match this Mac's brightness",
                           isOn: Binding(get: { model.matchBrightness }, set: { controller.setMatchBrightness($0) }))
                     .help("PowerPC Macs with a built-in screen (iMac, iBook, PowerBook) follow this Mac's brightness while they show it, and go back to their own afterwards.")
@@ -168,6 +176,7 @@ struct StatusDot: View {
 /// The selected PowerPC Mac: live numbers, Extend/Mirror and what you can do.
 struct PeerDetail: View {
     @ObservedObject var peer: PeerModel
+    let headless: Bool
     let controller: AppController
 
     var body: some View {
@@ -203,15 +212,16 @@ struct PeerDetail: View {
 
             if !peer.isPairing {
                 HStack {
-                    Text("Show")
+                    Text(headless ? "Show (Extend while it's this Mac's main display)" : "Show")
                     Spacer()
-                    Picker("Show", selection: Binding(get: { peer.mirror }, set: { controller.setMirror($0, peer) })) {
+                    Picker("Show", selection: Binding(get: { peer.mirror && !headless }, set: { controller.setMirror($0, peer) })) {
                         Text("Extend").tag(false)
                         Text("Mirror").tag(true)
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .fixedSize()
+                    .disabled(headless)
                 }
             }
 
@@ -222,7 +232,7 @@ struct PeerDetail: View {
                 Spacer()
                 if peer.isConnected {
                     Button("Arrange Displays…") { controller.openDisplaySettings() }
-                        .disabled(peer.mirror)
+                        .disabled(peer.showsMirror)
                         .help("Place it next to your other displays (not needed while mirroring)")
                     Button("Disconnect") { controller.setConnected(false, peer) }
                 } else if peer.isPaused {

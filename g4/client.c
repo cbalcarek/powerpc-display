@@ -1001,13 +1001,18 @@ static int peer_closed(int fd)
 }
 
 /* ask the person at this Mac to compare the code; 1 = yes */
-static int confirm_pairing(int fd, unsigned code)
+static int confirm_pairing(int fd, unsigned code, int noscreen)
 {
     char msg[300];
     double deadline = now_ms() + 120000;
-    snprintf(msg, sizeof msg,
-             "Your Mac wants to use this Mac as a display. Pair only if your Mac shows the same code: %03u %03u",
-             code / 1000, code % 1000);
+    if (noscreen)   /* a Mac with no monitor (a Mac mini, say): nothing to compare with */
+        snprintf(msg, sizeof msg,
+                 "A Mac with no screen of its own wants to use this Mac as its display. "
+                 "Pair only if you're setting that Mac up to use this one.");
+    else
+        snprintf(msg, sizeof msg,
+                 "Your Mac wants to use this Mac as a display. Pair only if your Mac shows the same code: %03u %03u",
+                 code / 1000, code % 1000);
     pair_answer = -1;
     report(G4C_PAIRING, msg);
     if (!app_mode) {
@@ -1063,7 +1068,7 @@ static int authenticate(int fd, const uint8_t *nc, const uint8_t *cpub, const ui
     }
     if (mode == G4_AUTH_PAIR) {
         if (g4_pair_key(key, cpriv, rest, cpub, rest, my_id, hid)) return -1;
-        if (!confirm_pairing(fd, g4_pair_code(key))) {
+        if (!confirm_pairing(fd, g4_pair_code(key), (p[1] & G4_AUTH_FLAG_NOSCREEN) != 0)) {
             g4_put32(why, G4_AUTH_DECLINED);
             send_msg(fd, G4_MSG_AUTH_FAIL, why, 4);
             report(G4C_WAITING, "Not paired.");

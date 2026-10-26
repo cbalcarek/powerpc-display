@@ -36,6 +36,8 @@ extension Host {
         vdisplayName = label
         displayID = vd.displayID
         log("virtual display \(displayID) created (\(W)x\(H)) — arrange it in System Settings › Displays")
+        let id = displayID
+        DispatchQueue.main.async { self.onDisplayCreated?(id) }
         return true
     }
 

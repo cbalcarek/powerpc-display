@@ -1,4 +1,5 @@
 import CDiscovery
+import CoreGraphics
 import Foundation
 
 /// One Host (connection, virtual display, capture) per PowerPC Mac, so
@@ -21,6 +22,13 @@ final class HostGroup {
     private(set) var smoothVideo: Bool
     private(set) var fastVideo: Bool
     private var enabled = true
+    /// "Use as this Mac's display" switch (on its own: also when there's no monitor)
+    private(set) var headlessChosen: Bool
+    /// no monitor at all besides our displays (a Mac mini on its own)
+    private(set) var noMonitor = false
+    var isHeadless: Bool { headlessChosen || noMonitor }
+    /// headless turned on or off (main thread), for the UI
+    var onHeadlessChange: (() -> Void)?
 
     init(config: Host.Config) {
         base = config
@@ -28,12 +36,17 @@ final class HostGroup {
         isMirror = config.mirror
         smoothVideo = config.smoothVideo
         fastVideo = config.fastVideo
+        headlessChosen = UserDefaults.standard.bool(forKey: Self.headlessKey)
     }
+    private static let headlessKey = "headless"
 
     /// Fixed address / name / display from the command line: one Host as before.
     private var single: Bool { base.g4Address != nil || base.g4Name != nil || base.fixedDisplayID != nil }
 
     func start() {
+        _ = Host.launchedAt
+        Host.screenVisible = { [weak self] in self?.screenVisible ?? true }
+        checkMonitor()
         startBrightnessSync()
         startLidWatch()
         if single { add(name: base.g4Name); return }
@@ -79,6 +92,8 @@ final class HostGroup {
             if !known.contains(name) { known.append(name); UserDefaults.standard.set(known, forKey: Self.knownKey) }
             log("serving “\(name)”")
         }
+        h.onDisplayCreated = { [weak self] id in self?.displayCreated(id) }
+        h.setHeadless(isHeadless)
         onAdd?(h)
         if !enabled { h.setEnabled(false) }
         h.start()
@@ -147,7 +162,9 @@ final class HostGroup {
     /// and remove their displays, and macOS sleeps as usual.
     func startLidWatch() {
         lidTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            guard let self, let closed = Lid.isClosed() else { return }
+            guard let self else { return }
+            self.checkMonitor()
+            guard let closed = Lid.isClosed() else { return }
             if closed == self.lidWasClosed { return }
             self.lidWasClosed = closed
             if closed {
@@ -171,4 +188,57 @@ final class HostGroup {
         }
     }
     func macDidWake(_ why: String) { hosts.forEach { $0.macDidWake(why) } }
+
+    // MARK: headless (no monitor on this Mac)
+
+    func setHeadless(_ on: Bool) {
+        headlessChosen = on
+        UserDefaults.standard.set(on, forKey: Self.headlessKey)
+        applyHeadless()
+        // already showing one: make it the main display now
+        if on, let id = hosts.compactMap({ $0.virtualDisplayID }).first { displayCreated(id) }
+    }
+
+    private func applyHeadless() {
+        let h = isHeadless
+        hosts.forEach { $0.setHeadless(h) }
+        onHeadlessChange?()
+    }
+
+    /// Every second: has a monitor been plugged in or unplugged? (Desktop
+    /// Macs only: a laptop with its lid closed has no monitor either, and is
+    /// handled as sleep.)
+    private func checkMonitor() {
+        guard Lid.isClosed() == nil else { return }
+        let ours = Set(hosts.compactMap { $0.virtualDisplayID })
+        let none = DisplayLayout.noMonitor(excluding: ours)
+        guard none != noMonitor else { return }
+        noMonitor = none
+        log(none ? "no monitor on this Mac: the PowerPC Mac is its display (headless)"
+                 : "a monitor is connected to this Mac")
+        applyHeadless()
+    }
+
+    /// Main thread: is there a screen here someone can see (to answer the
+    /// pairing question)? A monitor, or a PowerPC Mac showing this Mac.
+    var screenVisible: Bool {
+        let ours = Set(hosts.compactMap { $0.virtualDisplayID })
+        return !DisplayLayout.noMonitor(excluding: ours) || hosts.contains { $0.isConnectedNow }
+    }
+
+    /// A PowerPC Mac's display was created: while headless, make it the main
+    /// display unless another PowerPC Mac's already is.
+    private func displayCreated(_ id: CGDirectDisplayID, attempts: Int = 10) {
+        guard isHeadless else { return }
+        let others = Set(hosts.compactMap { $0.virtualDisplayID }).subtracting([id])
+        let main = CGMainDisplayID()
+        if main == id || others.contains(main) { return }
+        if DisplayLayout.makeMain(id) {
+            log("made display \(id) the main display")
+        } else if attempts > 1 {     // a new display takes a moment to come online
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.displayCreated(id, attempts: attempts - 1)
+            }
+        }
+    }
 }
