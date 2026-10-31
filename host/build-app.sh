@@ -1,11 +1,30 @@
 #!/bin/sh
-# Builds PowerPC Display.app (window + menu bar app) from this Swift package.
+# Builds PowerPC Display.app (window + menu bar app) from this Swift package,
+# Universal: Apple Silicon and Intel in one app, each Mac runs its own half.
 # Usage: ./build-app.sh            -> build/PowerPC Display.app
+#        ARCHS=arm64 ./build-app.sh  (one kind of Mac only: faster to build)
 set -e
 cd "$(dirname "$0")"
 
-swift build -c release
-BIN="$(swift build -c release --show-bin-path)/PowerPCDisplay"
+# Each architecture separately, then glued together with lipo. (One
+# "swift build --arch arm64 --arch x86_64" needs the full Xcode; this works
+# with just the Command Line Tools too.)
+ARCHS="${ARCHS:-arm64 x86_64}"
+SLICES=""
+for A in $ARCHS; do
+    echo "Building for $A..."
+    if swift build -c release --arch "$A"; then
+        SLICES="$SLICES $(swift build -c release --arch "$A" --show-bin-path)/PowerPCDisplay"
+    elif [ "$A" = x86_64 ] && [ -n "$SLICES" ]; then
+        echo "WARNING: the Intel build failed (errors above), so this app is Apple Silicon only."
+    else
+        exit 1
+    fi
+done
+BIN="$(mktemp -d)/PowerPCDisplay"
+# shellcheck disable=SC2086
+lipo -create $SLICES -output "$BIN"
+echo "Built for: $(lipo -archs "$BIN")"
 
 APP="build/PowerPC Display.app"
 rm -rf "$APP"
@@ -61,8 +80,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key>           <string>AppIcon</string>
 $ICON_NAME_KEY
     <key>CFBundlePackageType</key>        <string>APPL</string>
-    <key>CFBundleShortVersionString</key> <string>0.12</string>
-    <key>CFBundleVersion</key>            <string>12</string>
+    <key>CFBundleShortVersionString</key> <string>0.13</string>
+    <key>CFBundleVersion</key>            <string>13</string>
     <key>LSMinimumSystemVersion</key>     <string>14.0</string>
     <!-- macOS local-network privacy: required to find the G4 with Bonjour -->
     <key>NSLocalNetworkUsageDescription</key>

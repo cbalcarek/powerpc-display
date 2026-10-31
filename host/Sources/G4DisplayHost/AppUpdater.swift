@@ -79,8 +79,12 @@ final class AppUpdater {
             for a in (r["assets"] as? [[String: Any]]) ?? [] {
                 guard let n = a["name"] as? String, let s = a["browser_download_url"] as? String,
                       let u = URL(string: s) else { continue }
-                // PowerPC-Display-M1.zip / -PPC.zip (also the older -Mac / -Tiger names)
-                if n == "PowerPC-Display-M1.zip" || (n == "PowerPC-Display-Mac.zip" && mac == nil) { mac = u }
+                // PowerPC-Display-Mac.zip (Universal, 0.13+) or -M1.zip (Apple Silicon
+                // only, 0.11-0.12), and -PPC.zip (also the older -Tiger name)
+                if n == "PowerPC-Display-Mac.zip" { mac = u }
+                #if arch(arm64)
+                if n == "PowerPC-Display-M1.zip" && mac == nil { mac = u }   // won't run on Intel
+                #endif
                 if n == "PowerPC-Display-PPC.zip" || (n == "PowerPC-Display-Tiger.zip" && tiger == nil) { tiger = u }
             }
             let rel = Release(version: v, name: (r["name"] as? String) ?? tag, notes: (r["body"] as? String) ?? "",

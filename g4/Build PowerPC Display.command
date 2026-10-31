@@ -127,8 +127,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key>           <string>AppIcon</string>
     <key>CFBundlePackageType</key>        <string>APPL</string>
     <key>CFBundleSignature</key>          <string>????</string>
-    <key>CFBundleShortVersionString</key> <string>0.12</string>
-    <key>CFBundleVersion</key>            <string>12</string>
+    <key>CFBundleShortVersionString</key> <string>0.13</string>
+    <key>CFBundleVersion</key>            <string>13</string>
     <key>NSPrincipalClass</key>           <string>NSApplication</string>
     <key>LSMinimumSystemVersion</key>     <string>10.4</string>
 </dict>

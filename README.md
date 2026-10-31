@@ -1,6 +1,9 @@
-# PowerPC Display — a G3, G4 or G5 Mac as a display for an Apple Silicon Mac
+# PowerPC Display — a G3, G4 or G5 Mac as a display for a modern Mac
 
 (Formerly "G4 Display". The project folder is still called `g4display`.)
+
+The modern Mac can be Apple Silicon or Intel, with macOS 14 or later: the
+Mac app is Universal. This README says "Apple Silicon Mac" for it either way.
 
 The Apple Silicon Mac creates a virtual monitor the same size as the PowerPC
 Mac's screen, captures it with ScreenCaptureKit, and streams only what changed
@@ -134,12 +137,20 @@ on) with extra options for debugging: `-v` (stats), `-16` / `-32`, `-c N`
 `~/Desktop/ppcdisplay-test.png`). It prints the chip and automatic choices
 when it starts.
 
-## 3. The Apple Silicon Mac (macOS 14+)
+## 3. The Apple Silicon (or Intel) Mac (macOS 14+)
 
 Double-click **Build Mac App.command** (in the `g4display` folder). It builds
 PowerPC Display.app, installs it in /Applications, removes the old G4 Display
 app and opens it. (Same thing by hand: `cd host && sh build-app.sh`, then move
 `build/PowerPC Display.app` to /Applications.)
+
+The app is Universal: it's built twice, for Apple Silicon and for Intel, and
+each Mac runs its own half at full speed. Build it on an Apple Silicon Mac.
+`ARCHS=arm64 sh build-app.sh` builds just the Apple Silicon half (quicker
+while trying things out). If the Intel half fails to build, the script says
+so and makes an Apple Silicon-only app. To try the Intel half on an Apple
+Silicon Mac (it runs under Rosetta, slower than on a real Intel Mac): `arch
+-x86_64 "/Applications/PowerPC Display.app/Contents/MacOS/PowerPCDisplay"`.
 
 A **PowerPC Display**
 window opens (clicking the Dock icon brings it back), and there's a matching
@@ -330,7 +341,9 @@ normal and the PowerPC Macs stay on.) Turn the whole thing off on the PowerPC Ma
 Each build also saves a zip for GitHub releases in `releases/` (not part of
 the source):
 
-- **Build Mac App.command** → `releases/PowerPC-Display-M1.zip`
+- **Build Mac App.command** → `releases/PowerPC-Display-Mac.zip` (Universal;
+  0.11 and 0.12 called it `-M1.zip`. The updater takes either, and on an
+  Intel Mac only `-Mac.zip`)
 - **Build PowerPC Display.command** on Tiger → `PowerPC-Display-PPC.zip`,
   sent automatically to `releases/` on the Apple Silicon Mac when
   **Share with PowerPC Mac.command** is running there. Builds from the UTM

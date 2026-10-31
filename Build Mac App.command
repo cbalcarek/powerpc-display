@@ -1,6 +1,7 @@
 #!/bin/sh
-# Double-click on your Apple Silicon Mac: builds "PowerPC Display.app",
-# installs it in /Applications and opens it.
+# Double-click on your Mac (Apple Silicon, macOS 14+): builds "PowerPC
+# Display.app" for Apple Silicon and Intel Macs, installs it in /Applications
+# and opens it.
 cd "$(dirname "$0")/host" || exit 1
 sh build-app.sh || { echo; echo "Build failed - copy the errors above to Claude."; exit 1; }
 # The Screen Recording permission belongs to the app's signature. If that
@@ -30,6 +31,7 @@ fi
 defaults write local.ppcdisplay.host releasesDir "$(cd .. && pwd)/releases"
 open "/Applications/PowerPC Display.app"
 mkdir -p ../releases
-ditto -c -k --keepParent "/Applications/PowerPC Display.app" ../releases/PowerPC-Display-M1.zip &&
-    echo "Saved releases/PowerPC-Display-M1.zip (for GitHub releases)."
+rm -f ../releases/PowerPC-Display-M1.zip     # the Apple Silicon-only name before 0.13
+ditto -c -k --keepParent "/Applications/PowerPC Display.app" ../releases/PowerPC-Display-Mac.zip &&
+    echo "Saved releases/PowerPC-Display-Mac.zip (Apple Silicon and Intel, for GitHub releases)."
 echo "Installed and opened /Applications/PowerPC Display.app - you can close this window."
