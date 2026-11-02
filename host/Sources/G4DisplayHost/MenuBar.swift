@@ -58,6 +58,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         hl.state = model.headless ? .on : .off
         hl.toolTip = "For a Mac with no monitor: the PowerPC Mac is its main display, and its display stays while it's away."
         menu.addItem(hl)
+        let inp = action("Use PowerPC Keyboards and Mice", #selector(toggleInput))
+        inp.state = model.useInput ? .on : .off
+        menu.addItem(inp)
         let br = action("Match Brightness", #selector(toggleBrightness))
         br.state = model.matchBrightness ? .on : .off
         menu.addItem(br)
@@ -115,6 +118,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             mir.state = peer.mirror ? .on : .off
             sub.addItem(mir)
         }
+        if !peer.isPairing {
+            let snd = peerAction("Play Sound Here", #selector(toggleSound(_:)), peer)
+            snd.state = peer.sound ? .on : .off
+            sub.addItem(snd)
+        }
         if peer.isConnected, !peer.showsMirror {
             sub.addItem(action("Arrange Displays…", #selector(openDisplays)))
         }
@@ -155,6 +163,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func openDisplays() { controller.openDisplaySettings() }
     @objc private func toggleSmooth() { controller.setSmoothVideo(!model.smoothVideo) }
     @objc private func toggleFast() { controller.setFastVideo(!model.fastVideo) }
+    @objc private func toggleSound(_ sender: NSMenuItem) { if let p = peer(sender) { controller.setSound(!p.sound, p) } }
+    @objc private func toggleInput() { controller.setUseInput(!model.useInput) }
     @objc private func toggleHeadless() { controller.setHeadless(!model.headlessChosen) }
     @objc private func toggleBrightness() { controller.setMatchBrightness(!model.matchBrightness) }
     @objc private func checkUpdates() { controller.checkForUpdates() }

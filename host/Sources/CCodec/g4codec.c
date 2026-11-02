@@ -1796,3 +1796,85 @@ int g4dec_frame(g4_decoder *d, const uint8_t *p, size_t len, uint32_t *frame_id)
     }
     return 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* IMA ADPCM sound: 4 bits a sample, cheap to decode on a G3           */
+
+static const int16_t adpcm_step[89] = {
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+    50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230,
+    253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963,
+    1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327,
+    3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442,
+    11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
+};
+static const int8_t adpcm_index_adj[16] = { -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8 };
+
+/* one 4-bit code -> next sample; updates *pred and *index */
+static inline int adpcm_step_decode(int code, int *pred, int *index)
+{
+    int step = adpcm_step[*index];
+    int diff = step >> 3;
+    if (code & 4) diff += step;
+    if (code & 2) diff += step >> 1;
+    if (code & 1) diff += step >> 2;
+    *pred += (code & 8) ? -diff : diff;
+    if (*pred > 32767) *pred = 32767; else if (*pred < -32768) *pred = -32768;
+    *index += adpcm_index_adj[code];
+    if (*index < 0) *index = 0; else if (*index > 88) *index = 88;
+    return *pred;
+}
+
+size_t g4_adpcm_encode(g4_adpcm_state *st, const int16_t *in, unsigned frames,
+                       unsigned channels, uint8_t *out)
+{
+    unsigned c, i;
+    uint8_t *o = out;
+    for (c = 0; c < channels; c++) {
+        int pred = st[c].pred, index = st[c].index;
+        if (index < 0) index = 0; else if (index > 88) index = 88;
+        g4_put16(o, (uint32_t)(uint16_t)(int16_t)pred);
+        o[2] = (uint8_t)index; o[3] = 0;
+        o += 4;
+        for (i = 0; i < frames; i++) {
+            int sample = in[(size_t)i * channels + c];
+            int step = adpcm_step[index], diff = sample - pred, code = 0;
+            if (diff < 0) { code = 8; diff = -diff; }
+            if (diff >= step) { code |= 4; diff -= step; }
+            if (diff >= step >> 1) { code |= 2; diff -= step >> 1; }
+            if (diff >= step >> 2) { code |= 1; }
+            adpcm_step_decode(code, &pred, &index);   /* track exactly what the decoder will do */
+            if (i & 1) *o++ |= (uint8_t)(code << 4);
+            else *o = (uint8_t)code;
+        }
+        st[c].pred = pred; st[c].index = index;
+    }
+    return (size_t)(o - out);
+}
+
+int g4_audio_decode(const uint8_t *p, size_t len, int16_t *out, unsigned max_frames,
+                    unsigned *rate, unsigned *channels)
+{
+    unsigned frames, ch, c, i;
+    size_t need;
+    if (len < G4_AUDIO_HDR) return -1;
+    frames = g4_get16(p + 8);
+    ch = p[10];
+    if (p[11] != G4_AUDIO_ADPCM || ch < 1 || ch > 2 || (frames & 1) || frames > max_frames) return -1;
+    need = G4_AUDIO_HDR + (size_t)ch * (4 + frames / 2);
+    if (len < need) return -1;
+    *rate = g4_get32(p + 4);
+    *channels = ch;
+    p += G4_AUDIO_HDR;
+    for (c = 0; c < ch; c++) {
+        int pred = (int16_t)g4_get16(p), index = p[2];
+        if (index > 88) return -1;
+        p += 4;
+        for (i = 0; i < frames; i += 2) {
+            uint8_t b = *p++;
+            out[(size_t)i * ch + c] = (int16_t)adpcm_step_decode(b & 15, &pred, &index);
+            out[(size_t)(i + 1) * ch + c] = (int16_t)adpcm_step_decode(b >> 4, &pred, &index);
+        }
+    }
+    return (int)frames;
+}

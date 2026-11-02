@@ -141,3 +141,10 @@ int g4_unhex(const char *in, uint8_t *out, size_t n)
     }
     return 0;
 }
+
+void g4_input_mac(uint8_t mac[16], const uint8_t key[G4_TAG_BYTES], const uint8_t *msg, size_t len)
+{
+    uint8_t h[64];
+    g4_hmac_sha512(h, key, G4_TAG_BYTES, msg, len);
+    memcpy(mac, h, 16);
+}

@@ -75,6 +75,20 @@ struct StatusView: View {
                     .disabled(model.headless && !model.headlessChosen)
                     .help("The PowerPC Mac becomes this Mac's main display (menu bar and Dock), and its display stays while it's away, so windows don't move. Turns on by itself when there's no monitor.")
                 BoxDivider()
+                SwitchRow("Use the PowerPC Macs' keyboards and mice",
+                          caption: model.useInput && !model.inputAllowed
+                              ? "Needs Accessibility permission for PowerPC Display"
+                              : "Type and click on a PowerPC Mac to control this Mac",
+                          isOn: Binding(get: { model.useInput }, set: { controller.setUseInput($0) }))
+                    .help("While a PowerPC Mac shows this Mac, its keyboard, mouse and scroll wheel work here too. Command-Escape on it still returns to its own desktop.")
+                if model.useInput && !model.inputAllowed {
+                    HStack {
+                        Spacer()
+                        Button("Open Accessibility Settings…") { controller.openAccessibilitySettings() }
+                    }
+                    .padding(.horizontal, 14).padding(.bottom, 8)
+                }
+                BoxDivider()
                 SwitchRow("Match this Mac's brightness",
                           isOn: Binding(get: { model.matchBrightness }, set: { controller.setMatchBrightness($0) }))
                     .help("PowerPC Macs with a built-in screen (iMac, iBook, PowerBook) follow this Mac's brightness while they show it, and go back to their own afterwards.")
@@ -223,6 +237,14 @@ struct PeerDetail: View {
                     .fixedSize()
                     .disabled(headless)
                 }
+                HStack {
+                    Text("Play this Mac's sound on it")
+                    Spacer()
+                    Toggle("Play this Mac's sound on it", isOn: Binding(get: { peer.sound }, set: { controller.setSound($0, peer) }))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                .help("One PowerPC Mac at a time plays the sound. This Mac keeps playing it too; turn its volume down if you only want it there.")
             }
 
             HStack(spacing: 8) {

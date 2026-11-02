@@ -8,6 +8,7 @@ final class PeerModel: ObservableObject, Identifiable {
     @Published var status: Host.Status = .searching(nil)
     @Published var stats: Host.Stats?
     @Published var mirror: Bool
+    @Published var sound: Bool
     @Published var lastConnected: Date?
     var id: ObjectIdentifier { ObjectIdentifier(host) }
     var name: String? { host.macName }
@@ -17,6 +18,7 @@ final class PeerModel: ObservableObject, Identifiable {
     init(host: Host) {
         self.host = host
         mirror = host.mirrorChosen
+        sound = host.soundOn
         if let k = lastConnectedKey { lastConnected = UserDefaults.standard.object(forKey: k) as? Date }
     }
 
@@ -122,6 +124,9 @@ final class AppModel: ObservableObject {
     /// (also when there's no monitor)
     @Published var headlessChosen = false
     @Published var headless = false
+    /// take the PowerPC Macs' keyboards and mice, and whether macOS allows it (Accessibility)
+    @Published var useInput = true
+    @Published var inputAllowed = true
 
     init(fps: Int) { self.fps = fps }
 
@@ -176,6 +181,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         hosts.setMatchBrightness(mb)
         model.headlessChosen = hosts.headlessChosen
         model.headless = hosts.isHeadless
+        model.useInput = hosts.useInput
+        model.inputAllowed = Host.canPostEvents
         hosts.onHeadlessChange = { [weak self] in
             guard let self else { return }
             self.model.headless = self.hosts.isHeadless
@@ -199,6 +206,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 var nowConnected = false
                 if case .connected = s { nowConnected = true }
                 if peer.isConnected || nowConnected { peer.touchLastConnected() }   // connecting or just disconnected
+                if nowConnected { self?.askForInputAccessIfNeeded() }
                 peer.status = s
                 if !peer.isConnected { peer.stats = nil }
                 self?.model.objectWillChange.send()
@@ -217,6 +225,12 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         showWindow()
         if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
+        // notice when Accessibility is allowed in System Settings
+        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let ok = Host.canPostEvents
+            if ok != self.model.inputAllowed { self.model.inputAllowed = ok }
+        }
         hosts.start()
 
         // sleep and wake with this Mac (and its displays)
@@ -313,6 +327,29 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         hosts.setEnabled(on, for: peer.host)
     }
+
+    func setUseInput(_ on: Bool) {
+        hosts.setUseInput(on)
+        model.useInput = on
+        if on { askForInputAccessIfNeeded(force: true) }
+    }
+
+    /// Play this Mac's sound on one PowerPC Mac (the others stop).
+    func setSound(_ on: Bool, _ peer: PeerModel) {
+        hosts.setSound(on, for: peer.host)
+        for p in model.peers { p.sound = p === peer ? on : (on ? false : p.sound) }
+    }
+
+    /// macOS asks once for Accessibility, needed to use a PowerPC Mac's
+    /// keyboard and mouse: when one connects (or the setting is turned on).
+    private var askedForInput = false
+    func askForInputAccessIfNeeded(force: Bool = false) {
+        guard model.useInput, !Host.canPostEvents, force || !askedForInput else { return }
+        askedForInput = true
+        _ = CGRequestPostEventAccess()
+    }
+
+    func openAccessibilitySettings() { open("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") }
 
     func setHeadless(_ on: Bool) {
         hosts.setHeadless(on)

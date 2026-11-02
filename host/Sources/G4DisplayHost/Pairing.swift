@@ -15,6 +15,8 @@ struct Hello {
     var supportsYUV: Bool { flags & Int(G4_HELLO_FLAG_YUV) != 0 }
     var supportsHalfVideo: Bool { flags & Int(G4_HELLO_FLAG_YUVH) != 0 }
     var supportsPalette: Bool { flags & Int(G4_HELLO_FLAG_PAL) != 0 }
+    var supportsInput: Bool { flags & Int(G4_HELLO_FLAG_INPUT) != 0 }
+    var supportsAudio: Bool { flags & Int(G4_HELLO_FLAG_AUDIO) != 0 }
 }
 
 /// Paired PowerPC Macs. Keys live in the login keychain; names (for display
@@ -145,7 +147,9 @@ extension Host {
                 PairingStore.forget(hello.clientID)
                 return false
             }
-            return verifyClientProof(type, p, key: key, hello: hello, hostID: hostID, nh: nh, name: name)
+            guard verifyClientProof(type, p, key: key, hello: hello, hostID: hostID, nh: nh, name: name) else { return false }
+            inputKey = Self.deriveInputKey(key, hello: hello, hostID: hostID, nh: nh)
+            return true
         }
 
         // --- not paired yet: ask ---
@@ -204,6 +208,7 @@ extension Host {
         }
         guard verifyClientProof(type, p, key: key, hello: hello, hostID: hostID, nh: nh, name: name) else { return false }
         PairingStore.save(key: key, for: hello.clientID, name: name)
+        inputKey = Self.deriveInputKey(key, hello: hello, hostID: hostID, nh: nh)
         log("paired with \(name)")
         return true
     }
@@ -219,6 +224,13 @@ extension Host {
             return false
         }
         return true
+    }
+
+    /// Signs the keyboard and mouse messages of this connection.
+    private static func deriveInputKey(_ key: [UInt8], hello: Hello, hostID: [UInt8], nh: [UInt8]) -> [UInt8] {
+        var k = [UInt8](repeating: 0, count: Int(G4_TAG_BYTES))
+        g4_auth_tag(&k, key, CChar(73) /* 'I' */, hello.clientID, hostID, hello.nonce, nh)
+        return k
     }
 
     /// Asks on the main thread. true = pair.

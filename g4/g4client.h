@@ -33,6 +33,11 @@ void g4c_set_verbose(int on);                 /* performance stats every 5 s to 
 int  g4c_verbose(void);
 void g4c_stats_text(char *buf, int n);        /* latest stats line ("Now: ..." or "Last session ...") */
 
+/* keyboard and mouse (app): while g4c_input_active(), the other Mac is using
+   them, so the app passes scroll-wheel events in and swallows key events
+   (Command-Q is for the other Mac). Main thread. */
+int  g4c_input_active(void);
+void g4c_input_scroll(float dx, float dy);    /* lines (+ = up / left), as NSEvent deltaX/Y */
 void g4c_set_status_hook(g4c_status_fn fn);   /* called from the server thread */
 void g4c_set_depth(int depth);                /* 16, 32, or 0 = automatic; applies to the next connection */
 int  g4c_auto_depth(void);                    /* what automatic would pick on this Mac right now */

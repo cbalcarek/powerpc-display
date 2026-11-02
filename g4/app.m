@@ -707,6 +707,24 @@ static void open_log_file(void)
     }
 }
 
+/* While the other Mac is using this keyboard and mouse: scrolling goes to
+   it, and key presses (already sent by the engine) don't reach this app, so
+   Command-Q quits the app over there, not PowerPC Display here. */
+@interface PPDApplication : NSApplication
+@end
+
+@implementation PPDApplication
+- (void)sendEvent:(NSEvent *)e
+{
+    if (g4c_input_active()) {
+        NSEventType t = [e type];
+        if (t == NSScrollWheel) { g4c_input_scroll([e deltaX], [e deltaY]); return; }
+        if (t == NSKeyDown || t == NSKeyUp || t == NSFlagsChanged) return;
+    }
+    [super sendEvent:e];
+}
+@end
+
 int main(int argc, char **argv)
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
@@ -717,7 +735,7 @@ int main(int argc, char **argv)
     if (!isatty(2)) open_log_file();
     for (i = 1; i < argc; i++)
         if (!strcmp(argv[i], "-v")) g4c_set_verbose(1);
-    app = [NSApplication sharedApplication];
+    app = [PPDApplication sharedApplication];
     gDelegate = [[G4AppDelegate alloc] init];
     [app setDelegate:gDelegate];
     [app run];

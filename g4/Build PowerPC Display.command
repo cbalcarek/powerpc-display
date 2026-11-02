@@ -39,7 +39,7 @@ case "$THIS_CPU" in
 esac
 
 COMMON="-O3 -fomit-frame-pointer -Wall -I$CODEC/include"
-LIBS="-framework OpenGL -framework ApplicationServices -framework Carbon -framework IOKit"
+LIBS="-framework OpenGL -framework ApplicationServices -framework Carbon -framework IOKit -framework AudioUnit -framework CoreAudio"
 TMP="/tmp/ppcdisplay-build.$$"
 rm -rf "$TMP"; mkdir -p "$TMP" || exit 1
 
@@ -129,7 +129,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleSignature</key>          <string>????</string>
     <key>CFBundleShortVersionString</key> <string>0.13</string>
     <key>CFBundleVersion</key>            <string>13</string>
-    <key>NSPrincipalClass</key>           <string>NSApplication</string>
+    <key>NSPrincipalClass</key>           <string>PPDApplication</string>
     <key>LSMinimumSystemVersion</key>     <string>10.4</string>
 </dict>
 </plist>

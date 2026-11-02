@@ -79,6 +79,8 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var _releaseWhileAsleep = false            // lid closed: remove the virtual display too
     var _peerSleeping = false                  // ...and we told the PowerPC Mac to sleep too
     var _headless = false                      // this Mac has no monitor: keep our display, no mirroring
+    var _useInput = true                       // take the PowerPC Mac's keyboard and mouse
+    var _sound = false                         // play this Mac's sound on the PowerPC Mac
     var _stream: SCStream?
     var _scConfig: SCStreamConfiguration?
     let wake = DispatchSemaphore(value: 0)
@@ -110,6 +112,21 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var needFullIngest = true                  // next frame: convert the whole screen
     var lastFullIngest = 0.0
     var rectIngest = false                     // dirty-rect ingestion allowed (extend mode)
+    var clientInput = false                    // the client can send its keyboard and mouse (0.13+)
+    var clientAudio = false                    // ...and play sound (0.13+)
+    var sentInputOn = false                    // we asked it for its keyboard and mouse
+    var audioOn = false                        // capturing sound for it
+    // --- sound being packed (audioQ) ---
+    var adpcm = [g4_adpcm_state](repeating: g4_adpcm_state(pred: 0, index: 0), count: 2)
+    var audioPending: [Int16] = []             // interleaved stereo, waiting for a whole packet
+    var audioSeq: UInt32 = 0
+
+    // --- keyboard and mouse from the PowerPC Mac (connection thread) ---
+    var inputKey: [UInt8]?                     // from pairing, this connection only
+    var lastInputSeq: UInt32 = 0
+    var inputMap = (display: CGDirectDisplayID(0), scale: CGFloat(1), offX: CGFloat(0), offY: CGFloat(0))
+    let injector = InputInjector()
+    let audioQ = DispatchQueue(label: "ppcdisplay.audio", qos: .userInteractive)
 
     // --- per-connection (connection thread) ---
     var W = 0, H = 0, depth = 32, slots = 0, widthMM = 0
@@ -305,6 +322,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
                 post(.failed("Update PowerPC Display on “\(name)”: this version only connects to paired Macs."))
                 close(sock); sleep(5); continue
             }
+            inputKey = nil
             guard authenticate(sock, hello: hello, name: name) else {
                 close(sock); sleep(2); continue
             }
@@ -329,6 +347,8 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
             if hello.mac.count == 6 { rememberMAC(hello.mac) }
             encQ.sync {
                 clientSleeps = hello.mac.count == 6
+                clientInput = hello.supportsInput
+                clientAudio = hello.supportsAudio
                 beginStreaming(sock, yuv: yuv, halfVideo: half, mirroring: mirroring)
                 if let e = enc { g4enc_set_palette(e, hello.supportsPalette ? 1 : 0) }
             }
@@ -351,6 +371,9 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
             }
             post(.connected(name: name, width: W, height: H, depth: depth))
             let did = displayID, sc = hintScale, ox = hintOffX, oy = hintOffY
+            inputMap = (did, sc, ox, oy)
+            lastInputSeq = 0
+            encQ.async { self.refreshInputOn() }
             DispatchQueue.main.async {
                 self.cursor.start(host: self, displayID: did, scale: sc, offsetX: ox, offsetY: oy)
             }

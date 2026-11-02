@@ -38,6 +38,8 @@
 #include <OpenGL/glext.h>
 #include <ApplicationServices/ApplicationServices.h>
 #include <Carbon/Carbon.h>
+#include <AudioUnit/AudioUnit.h>
+#include <libkern/OSAtomic.h>
 
 #include <arpa/inet.h>
 #include <dns_sd.h>
@@ -110,15 +112,21 @@ static int read_full(int fd, void *buf, size_t n)
     return 0;
 }
 
+/* the engine and input threads both send: one whole message at a time */
+static pthread_mutex_t write_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static int write_full(int fd, const void *buf, size_t n)
 {
     const uint8_t *p = (const uint8_t *)buf;
+    int rc = 0;
+    pthread_mutex_lock(&write_lock);
     while (n) {
         ssize_t r = write(fd, p, n);
-        if (r < 0) { if (errno == EINTR) continue; return -1; }
+        if (r < 0) { if (errno == EINTR) continue; rc = -1; break; }
         p += r; n -= (size_t)r;
     }
-    return 0;
+    pthread_mutex_unlock(&write_lock);
+    return rc;
 }
 
 static int send_u32_msg(int fd, int type, uint32_t v)
@@ -296,10 +304,23 @@ typedef struct {
        no wait for the display refresh, so frames never queue behind it */
     int hw, hw_shown;
     int host_sleeping;         /* the other Mac said it's going to sleep */
+
+    /* keyboard and mouse to the other Mac (when it asks: G4_MSG_INPUT_ON) */
+    uint8_t ikey[G4_TAG_BYTES];      /* signs them; from the pairing key, per connection */
+    volatile int input_on;           /* the other Mac wants them */
+    volatile int input_stop;         /* the session is ending: input thread, finish */
+    int input_thread_up;
+    pthread_t input_thread;
+    uint32_t input_seq;
+    volatile double local_move_ms;   /* this Mac's mouse last moved (don't warp it then) */
+    /* sound from the other Mac */
+    struct g4_audio *audio;
     float own_brightness;      /* this screen's brightness before the other Mac set it (<0: untouched) */
 } session;
 
 static int  update_offer(session *s, const uint8_t *p, uint32_t len);
+static void input_set(session *s, int on);
+static void audio_packet(session *s, const uint8_t *p, uint32_t len);
 static void brightness_msg(session *s, const uint8_t *p, uint32_t len);
 static void set_brightness(CGDirectDisplayID d, float v);
 static void update_data(session *s, const uint8_t *p, uint32_t len);
@@ -329,7 +350,10 @@ static void hw_cursor_sync(session *s)
 {
     int want = s->render && s->cur_vis && s->cur_w > 0;
     if (want) {
-        CGDisplayMoveCursorToPoint(s->display, CGPointMake((float)s->cur_x, (float)s->cur_y));
+        /* the mouse here is driving it: the other Mac's echo of where it is
+           arrives a moment late, so moving it there would make it jitter */
+        if (!s->input_on || now_ms() - s->local_move_ms > 300)
+            CGDisplayMoveCursorToPoint(s->display, CGPointMake((float)s->cur_x, (float)s->cur_y));
         if (!s->hw_shown) { CGDisplayShowCursor(s->display); s->hw_shown = 1; }
     } else if (s->hw_shown) {
         CGDisplayHideCursor(s->display);
@@ -860,6 +884,12 @@ static int handle_message(session *s, int *need_draw, uint32_t *frame_to_ack)
     case G4_MSG_BRIGHTNESS:
         brightness_msg(s, s->msg, len);
         break;
+    case G4_MSG_INPUT_ON:
+        if (len >= 1) input_set(s, s->msg[0] != 0);
+        break;
+    case G4_MSG_AUDIO:
+        audio_packet(s, s->msg, len);
+        break;
     case G4_MSG_SLEEP:
         s->host_sleeping = 1;
         return -1;                  /* end the session; see sleep_with_host() */
@@ -1041,7 +1071,8 @@ static int confirm_pairing(int fd, unsigned code, int noscreen)
 
 /* After HELLO: the other Mac must prove it's paired with us (or pair now).
    Nothing else is accepted before this succeeds. 0 = ok */
-static int authenticate(int fd, const uint8_t *nc, const uint8_t *cpub, const uint8_t *cpriv)
+static int authenticate(int fd, const uint8_t *nc, const uint8_t *cpub, const uint8_t *cpriv,
+                        uint8_t ikey[G4_TAG_BYTES])
 {
     uint8_t p[128], key[G4_KEY_BYTES], tag[G4_TAG_BYTES], why[4];
     const uint8_t *hid, *nh, *rest;
@@ -1064,6 +1095,7 @@ static int authenticate(int fd, const uint8_t *nc, const uint8_t *cpub, const ui
             return -1;
         }
         g4_auth_tag(tag, pairs[i].key, 'C', my_id, hid, nc, nh);
+        g4_auth_tag(ikey, pairs[i].key, 'I', my_id, hid, nc, nh);   /* signs our keyboard and mouse */
         return send_msg(fd, G4_MSG_AUTH_OK, tag, G4_TAG_BYTES);
     }
     if (mode == G4_AUTH_PAIR) {
@@ -1077,11 +1109,312 @@ static int authenticate(int fd, const uint8_t *nc, const uint8_t *cpub, const ui
         }
         pairing_store(hid, key);
         g4_auth_tag(tag, key, 'C', my_id, hid, nc, nh);
+        g4_auth_tag(ikey, key, 'I', my_id, hid, nc, nh);
         memset(key, 0, sizeof key);
         fprintf(stderr, "paired with a new Mac\n");
         return send_msg(fd, G4_MSG_AUTH_OK, tag, G4_TAG_BYTES);
     }
     return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* keyboard and mouse to the other Mac                                 */
+/*
+ * While the other Mac asks for them (G4_MSG_INPUT_ON) and its picture is
+ * on screen, a thread polls this Mac's keys, pointer and buttons about 250
+ * times a second and sends what changed, signed with the connection's input
+ * key. Polling needs no permissions on Tiger and sees every key (GetKeys
+ * already watches for Command-Escape). Scrolling only arrives as events, so
+ * the app passes those in (g4c_input_scroll), and it swallows key events
+ * meanwhile so Command-Q goes to the other Mac instead of quitting us.
+ */
+
+static pthread_mutex_t scroll_lock = PTHREAD_MUTEX_INITIALIZER;
+static float scroll_dx, scroll_dy;
+static volatile int input_active_flag = 0;
+
+int  g4c_input_active(void) { return input_active_flag; }
+void g4c_input_scroll(float dx, float dy)
+{
+    pthread_mutex_lock(&scroll_lock);
+    scroll_dx += dx; scroll_dy += dy;
+    pthread_mutex_unlock(&scroll_lock);
+}
+
+static void put_event(uint8_t *e, int kind, int a, int b, int c)
+{
+    memset(e, 0, G4_INPUT_EVENT_LEN);
+    e[0] = (uint8_t)kind; e[1] = (uint8_t)a;
+    g4_put16(e + 2, (uint32_t)(uint16_t)(int16_t)b);
+    g4_put16(e + 4, (uint32_t)(uint16_t)(int16_t)c);
+}
+
+static int send_input(session *s, const uint8_t *ev, int n)
+{
+    uint8_t m[G4_HDR_SIZE + 4 + G4_INPUT_MAX_EVENTS * G4_INPUT_EVENT_LEN + G4_INPUT_MAC_LEN];
+    uint32_t body = 4 + (uint32_t)n * G4_INPUT_EVENT_LEN;
+    g4_put_header(m, G4_MSG_INPUT, body + G4_INPUT_MAC_LEN);
+    g4_put32(m + G4_HDR_SIZE, ++s->input_seq);
+    memcpy(m + G4_HDR_SIZE + 4, ev, (size_t)n * G4_INPUT_EVENT_LEN);
+    g4_input_mac(m + G4_HDR_SIZE + body, s->ikey, m + G4_HDR_SIZE, body);
+    return write_full(s->fd, m, G4_HDR_SIZE + body + G4_INPUT_MAC_LEN);
+}
+
+static int key_bit(const unsigned char *k, int code) { return (k[code >> 3] >> (code & 7)) & 1; }
+static int is_modifier(int code) { return code >= 54 && code <= 63; }   /* Command ... fn */
+
+static void read_pointer(session *s, int *x, int *y, int *buttons)
+{
+    CGEventRef e = CGEventCreate(NULL);
+    CGPoint pt = e ? CGEventGetLocation(e) : CGPointMake(0, 0);
+    if (e) CFRelease(e);
+    *x = (int)pt.x; *y = (int)pt.y;
+    if (*x < 0) *x = 0; else if (*x >= s->W) *x = s->W - 1;
+    if (*y < 0) *y = 0; else if (*y >= s->H) *y = s->H - 1;
+    *buttons = (CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonLeft) ? 1 : 0)
+             | (CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonRight) ? 2 : 0)
+             | (CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonCenter) ? 4 : 0);
+}
+
+static void *input_thread(void *arg)
+{
+    session *s = (session *)arg;
+    unsigned char prev[16], cur[16];
+    int px = 0, py = 0, pb = 0, active = 0;
+    double last_mouse = 0;
+
+    while (!s->input_stop) {
+        uint8_t ev[G4_INPUT_MAX_EVENTS * G4_INPUT_EVENT_LEN];
+        int n = 0, pass, k, x, y, b;
+        KeyMap km;
+        float sdx, sdy;
+
+        if (!s->input_on || !s->render) {
+            input_active_flag = 0;
+            active = 0;
+            usleep(20000);
+            continue;
+        }
+        GetKeys(km);
+        memcpy(cur, km, 16);
+        /* Command-Escape returns to this Mac: never send that Escape */
+        if (key_bit(cur, 55) || key_bit(cur, 54)) cur[53 >> 3] &= (unsigned char)~(1 << (53 & 7));
+        read_pointer(s, &x, &y, &b);
+        if (!active) {
+            /* starting: what's already held stays here, and the other Mac's
+               pointer only moves once this mouse does */
+            memcpy(prev, cur, 16);
+            px = x; py = y; pb = b;
+            active = 1;
+            pthread_mutex_lock(&scroll_lock); scroll_dx = scroll_dy = 0; pthread_mutex_unlock(&scroll_lock);
+            input_active_flag = 1;
+        }
+
+        /* keys: modifiers go down first and come up last */
+        for (pass = 0; pass < 4; pass++) {
+            for (k = 0; k < 128; k++) {
+                int was = key_bit(prev, k), now = key_bit(cur, k), mod = is_modifier(k);
+                if (was == now) continue;
+                if ((pass == 0 && !(now && mod)) || (pass == 1 && !(now && !mod)) ||
+                    (pass == 2 && !(!now && !mod)) || (pass == 3 && !(!now && mod))) continue;
+                if (n == G4_INPUT_MAX_EVENTS) { if (send_input(s, ev, n)) return NULL; n = 0; }
+                put_event(ev + n * G4_INPUT_EVENT_LEN, G4_IN_KEY, k, 0, 0);
+                ev[n++ * G4_INPUT_EVENT_LEN + 2] = (uint8_t)now;     /* [2]: 1 = down */
+            }
+        }
+        memcpy(prev, cur, 16);
+
+        /* the pointer: buttons at once, movement at most every 8 ms */
+        if (b != pb || ((x != px || y != py) && now_ms() - last_mouse >= 8)) {
+            if (x != px || y != py) s->local_move_ms = now_ms();
+            if (n == G4_INPUT_MAX_EVENTS) { if (send_input(s, ev, n)) return NULL; n = 0; }
+            put_event(ev + n++ * G4_INPUT_EVENT_LEN, G4_IN_MOUSE, b, x, y);
+            px = x; py = y; pb = b;
+            last_mouse = now_ms();
+        }
+
+        pthread_mutex_lock(&scroll_lock);
+        sdx = scroll_dx; sdy = scroll_dy; scroll_dx = scroll_dy = 0;
+        pthread_mutex_unlock(&scroll_lock);
+        if (sdx != 0 || sdy != 0) {
+            int dy = (int)(sdy * 10 + (sdy < 0 ? -0.5f : 0.5f)), dx = (int)(sdx * 10 + (sdx < 0 ? -0.5f : 0.5f));
+            if (dy > 32767) dy = 32767; else if (dy < -32767) dy = -32767;
+            if (dx > 32767) dx = 32767; else if (dx < -32767) dx = -32767;
+            if (dy || dx) {
+                if (n == G4_INPUT_MAX_EVENTS) { if (send_input(s, ev, n)) return NULL; n = 0; }
+                put_event(ev + n++ * G4_INPUT_EVENT_LEN, G4_IN_SCROLL, 0, dy, dx);
+            }
+        }
+
+        if (n && send_input(s, ev, n)) break;
+        usleep(4000);
+    }
+    input_active_flag = 0;
+    return NULL;
+}
+
+static void input_set(session *s, int on)
+{
+    s->input_on = on;
+    if (on && !s->input_thread_up && !opt_test && app_mode) {
+        s->input_stop = 0;
+        if (pthread_create(&s->input_thread, NULL, input_thread, s) == 0) {
+            s->input_thread_up = 1;
+            fprintf(stderr, "your Mac uses this keyboard and mouse while it's shown\n");
+        }
+    }
+}
+
+static void input_end(session *s)
+{
+    if (!s->input_thread_up) return;
+    s->input_stop = 1;
+    pthread_join(s->input_thread, NULL);
+    s->input_thread_up = 0;
+    input_active_flag = 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* sound from the other Mac                                            */
+/*
+ * Packets of IMA ADPCM arrive about every 20 ms. They're decoded into a
+ * ring buffer that the default output unit plays from; Core Audio converts
+ * the sample rate to the hardware's. About 60 ms is buffered before playing
+ * (and again after running dry), so network hiccups don't click. If the
+ * buffer gets too full (the two Macs' clocks drift a little), new packets
+ * are dropped until it catches up.
+ */
+
+#define AUDIO_RING_FRAMES 32768u            /* a power of two; ~0.7 s at 48 kHz */
+
+struct g4_audio {
+    AudioUnit unit;
+    int running;
+    unsigned rate, ch;
+    int16_t ring[AUDIO_RING_FRAMES * 2];
+    volatile unsigned wr, rd;              /* frames, free running; wr: engine thread, rd: audio thread */
+    volatile int priming;                  /* audio thread: wait for `target` frames */
+    unsigned target, high;
+    int16_t pcm[G4_AUDIO_MAX_FRAMES * 2];
+};
+
+static OSStatus audio_render(void *ref, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts,
+                             UInt32 bus, UInt32 frames, AudioBufferList *io)
+{
+    struct g4_audio *a = (struct g4_audio *)ref;
+    int16_t *out = (int16_t *)io->mBuffers[0].mData;
+    unsigned ch = a->ch, avail, n = 0, i;
+    (void)flags; (void)ts; (void)bus;
+    OSMemoryBarrier();
+    avail = a->wr - a->rd;
+    if (a->priming && avail >= a->target) a->priming = 0;
+    if (!a->priming) {
+        n = avail < frames ? avail : frames;
+        for (i = 0; i < n; i++) {
+            unsigned r = (a->rd + i) & (AUDIO_RING_FRAMES - 1);
+            out[i * ch] = a->ring[r * 2];
+            if (ch == 2) out[i * ch + 1] = a->ring[r * 2 + 1];
+        }
+        OSMemoryBarrier();
+        a->rd += n;
+        if (n < frames) a->priming = 1;     /* ran dry: buffer up again */
+    }
+    if (n < frames) memset(out + n * ch, 0, (frames - n) * ch * sizeof(int16_t));
+    return noErr;
+}
+
+static void audio_stop(struct g4_audio *a)
+{
+    if (!a->running) return;
+    AudioOutputUnitStop(a->unit);
+    AudioUnitUninitialize(a->unit);
+    CloseComponent(a->unit);
+    a->running = 0;
+}
+
+static int audio_start(struct g4_audio *a, unsigned rate, unsigned ch)
+{
+    ComponentDescription d;
+    Component c;
+    AURenderCallbackStruct cb;
+    AudioStreamBasicDescription f;
+
+    memset(&d, 0, sizeof d);
+    d.componentType = kAudioUnitType_Output;
+    d.componentSubType = kAudioUnitSubType_DefaultOutput;
+    d.componentManufacturer = kAudioUnitManufacturer_Apple;
+    c = FindNextComponent(NULL, &d);
+    if (!c || OpenAComponent(c, &a->unit) != noErr) return -1;
+
+    memset(&f, 0, sizeof f);
+    f.mSampleRate = rate;
+    f.mFormatID = kAudioFormatLinearPCM;
+    f.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked
+#ifdef __BIG_ENDIAN__
+                   | kLinearPCMFormatFlagIsBigEndian
+#endif
+                   ;
+    f.mFramesPerPacket = 1;
+    f.mChannelsPerFrame = ch;
+    f.mBitsPerChannel = 16;
+    f.mBytesPerFrame = f.mBytesPerPacket = 2 * ch;
+    cb.inputProc = audio_render;
+    cb.inputProcRefCon = a;
+    if (AudioUnitSetProperty(a->unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, sizeof f) != noErr ||
+        AudioUnitSetProperty(a->unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb) != noErr ||
+        AudioUnitInitialize(a->unit) != noErr) {
+        CloseComponent(a->unit);
+        return -1;
+    }
+    a->rate = rate; a->ch = ch;
+    a->rd = a->wr = 0;
+    a->priming = 1;
+    a->target = rate * 60 / 1000;          /* 60 ms before playing */
+    a->high = rate * 250 / 1000;           /* above this, drop new packets */
+    if (AudioOutputUnitStart(a->unit) != noErr) {
+        AudioUnitUninitialize(a->unit);
+        CloseComponent(a->unit);
+        return -1;
+    }
+    a->running = 1;
+    fprintf(stderr, "playing your Mac's sound (%u Hz, %u channel%s)\n", rate, ch, ch == 1 ? "" : "s");
+    return 0;
+}
+
+static void audio_packet(session *s, const uint8_t *p, uint32_t len)
+{
+    struct g4_audio *a = s->audio;
+    unsigned rate = 0, ch = 0, i, avail;
+    int frames;
+    if (!a) {
+        a = s->audio = (struct g4_audio *)calloc(1, sizeof *a);
+        if (!a) return;
+    }
+    frames = g4_audio_decode(p, len, a->pcm, G4_AUDIO_MAX_FRAMES, &rate, &ch);
+    if (frames <= 0 || rate < 8000 || rate > 96000) return;
+    if (a->running && (rate != a->rate || ch != a->ch)) audio_stop(a);
+    if (!a->running && audio_start(a, rate, ch)) {
+        free(s->audio); s->audio = NULL;     /* no sound output: ignore sound */
+        return;
+    }
+    OSMemoryBarrier();
+    avail = a->wr - a->rd;
+    if (avail + (unsigned)frames > a->high || avail + (unsigned)frames > AUDIO_RING_FRAMES) return;
+    for (i = 0; i < (unsigned)frames; i++) {
+        unsigned w = (a->wr + i) & (AUDIO_RING_FRAMES - 1);
+        a->ring[w * 2] = a->pcm[i * ch];
+        a->ring[w * 2 + 1] = ch == 2 ? a->pcm[i * ch + 1] : 0;
+    }
+    OSMemoryBarrier();
+    a->wr += (unsigned)frames;
+}
+
+static void audio_end(session *s)
+{
+    if (!s->audio) return;
+    audio_stop(s->audio);
+    free(s->audio);
+    s->audio = NULL;
 }
 
 static void run_session(int fd)
@@ -1129,6 +1462,7 @@ static void run_session(int fd)
     /* 4:2:2 video regions: decoded on the CPU into the normal framebuffer,
        so every drawing path supports them (32-bit only) */
     hello[G4_HDR_SIZE + 11] = (uint8_t)((s.depth == 32 ? G4_HELLO_FLAG_YUV | G4_HELLO_FLAG_YUVH : 0) | G4_HELLO_FLAG_AUTH | G4_HELLO_FLAG_PAL |
+                                        G4_HELLO_FLAG_AUDIO | (app_mode && !opt_test ? G4_HELLO_FLAG_INPUT : 0) |
                                         (hello_len == G4_HELLO_MAC_LEN ? G4_HELLO_FLAG_SLEEP : 0));
     memcpy(hello + G4_HDR_SIZE + 16, my_id, G4_ID_BYTES);
     memcpy(hello + G4_HDR_SIZE + 32, nonce, G4_NONCE_BYTES);
@@ -1150,7 +1484,7 @@ static void run_session(int fd)
         unsigned wmm = (mm.width > 0 && mm.width < 65535) ? (unsigned)(mm.width + 0.5) : 0;
         g4_put16(hello + G4_HDR_SIZE + 14, wmm);
     }
-    if (write_full(fd, hello, G4_HDR_SIZE + hello_len) || authenticate(fd, nonce, cpub, cpriv)) {
+    if (write_full(fd, hello, G4_HDR_SIZE + hello_len) || authenticate(fd, nonce, cpub, cpriv, s.ikey)) {
         memset(cpriv, 0, sizeof cpriv);
         g4dec_free(&s.dec); free(s.fb);
         return;
@@ -1328,6 +1662,8 @@ static void run_session(int fd)
         fprintf(stderr, "%s%s\n", head, line);
         set_stats_text(head, line);
     }
+    input_end(&s);
+    audio_end(&s);
     if (s.own_brightness >= 0) set_brightness(s.display, s.own_brightness);   /* our own again */
     if (s.gl_tried) gl_teardown(&s);
     if (s.hw) cursor_hook(NULL, 0, 0, 0, 0);       /* back to the normal arrow */

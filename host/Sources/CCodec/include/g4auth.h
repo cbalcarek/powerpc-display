@@ -45,6 +45,9 @@ uint32_t g4_pair_code(const uint8_t key[G4_KEY_BYTES]);
 void     g4_auth_tag(uint8_t tag[G4_TAG_BYTES], const uint8_t key[G4_KEY_BYTES], char who,
                      const uint8_t client_id[G4_ID_BYTES], const uint8_t host_id[G4_ID_BYTES],
                      const uint8_t client_nonce[G4_NONCE_BYTES], const uint8_t host_nonce[G4_NONCE_BYTES]);
+/* keyboard and mouse messages: tag for a G4_MSG_INPUT payload (everything
+   before the tag), keyed with g4_auth_tag(..., 'I', ...) for the connection */
+void     g4_input_mac(uint8_t mac[16], const uint8_t key[G4_TAG_BYTES], const uint8_t *msg, size_t len);
 /* constant-time compare: 1 = equal */
 int      g4_equal(const uint8_t *a, const uint8_t *b, size_t n);
 /* HMAC-SHA512 (exposed for tests) */

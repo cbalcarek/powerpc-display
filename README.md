@@ -263,8 +263,50 @@ screen, pairing asks on that screen as usual.
    PowerPC Mac.
 2. Once, with a monitor or Screen Sharing: open PowerPC Display, allow
    **Screen Recording** and **Local Network**, and turn on **Launch at login**.
-3. Use the mini's own keyboard and mouse: the PowerPC Mac only shows the
-   picture.
+3. Allow **Accessibility** too, so the PowerPC Mac's keyboard and mouse work
+   (next section). A keyboard and mouse on the mini itself work as well.
+
+## Keyboard and mouse from the PowerPC Mac
+
+**Use the PowerPC Macs' keyboards and mice** (General; on by default):
+while a PowerPC Mac shows this Mac, typing, clicking and scrolling on it
+work here, as if its keyboard and mouse were plugged into this Mac. macOS
+asks once for **Accessibility** permission (System Settings › Privacy &
+Security › Accessibility); the window shows a button for it until it's
+allowed.
+
+- Its pointer moves within its own screen; with several PowerPC Macs,
+  each one's mouse moves the one shared pointer onto its screen (like a
+  KVM switch). This Mac's own mouse and keyboard keep working too.
+- Keys are sent as Mac key codes, which haven't changed since Tiger, so
+  your keyboard layout, Command shortcuts and modifier keys work as usual.
+  Held keys repeat at this Mac's key-repeat speed. Command-Q goes to this
+  Mac; **Command-Escape** still returns the PowerPC Mac to its own desktop
+  (and is never sent).
+- Everything the PowerPC Mac sends is signed with a key from pairing that's
+  new for each connection, so nobody else on the network can type here. If
+  the connection drops, any held key or button is let go.
+- The PowerPC Mac checks its keys and pointer about 250 times a second (no
+  permissions needed on Tiger); scrolling comes from its scroll-wheel
+  events. Older PowerPC apps (before 0.13) just show the picture.
+
+## Sound on the PowerPC Mac
+
+**Play this Mac's sound on it** (in a PowerPC Mac's details, or **Play Sound
+Here** in its menu): this Mac's sound plays on that PowerPC Mac's speakers.
+One PowerPC Mac at a time; choosing another moves it there. It's off until
+you turn it on, and remembered.
+
+- It's captured with the screen (ScreenCaptureKit, 48 kHz stereo) and sent
+  as IMA ADPCM, 4 bits a sample: about 48 KB/s, next to several MB/s for the
+  picture, and cheap enough for a G3 to play. Quality is like a good
+  cassette (about 39 dB signal to noise in the tests).
+- The PowerPC Mac buffers about 60 ms before playing, so sound runs roughly
+  in step with the picture (which is itself a few tens of ms behind).
+- This Mac keeps playing the sound too. Turn its own volume down if you
+  only want it on the PowerPC Mac (check that the PowerPC Mac still gets it:
+  whether macOS captures sound before or after the volume control hasn't
+  been tested yet).
 
 ## Brightness
 

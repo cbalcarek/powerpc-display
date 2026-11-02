@@ -20,12 +20,16 @@ extension Host {
         sendTimes.removeAll()
         peerVersion = ""; offered = nil; sentBrightness = -1
         rttAvg = 0; paced = false
+        sentInputOn = false; audioOn = false
+        resetAudio()
         needFullIngest = true
         lastHeard = nowMs()
         startPings()
     }
 
     func endStreaming(_ sock: Int32) {
+        if sentInputOn { injector.releaseAll() }      // let go of any key or button it held
+        sentInputOn = false; audioOn = false
         pingTimer?.cancel()
         pingTimer = nil
         close(sock)
@@ -55,6 +59,8 @@ extension Host {
             if !self.peerVersion.isEmpty, self.offered == nil, self.pingSeq % 30 == 29 {
                 self.onClientVersion(self.peerVersion)
             }
+            self.refreshInputOn()                     // e.g. Accessibility was just allowed
+            self.refreshAudioOn()
             self.pingSeq &+= 1
             var p = [UInt8](repeating: 0, count: 4)
             put32(&p, 0, self.pingSeq)
@@ -253,6 +259,8 @@ extension Host {
                 encQ.async { self.onClientVersion(v) }
             } else if type == Int(G4_MSG_UPDATE_REQ) {
                 encQ.async { self.sendUpdate() }
+            } else if type == Int(G4_MSG_INPUT) {
+                handleInput(payload, len)
             }
         }
     }

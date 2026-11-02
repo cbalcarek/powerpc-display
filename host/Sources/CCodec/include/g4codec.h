@@ -48,8 +48,34 @@ enum {
     G4_MSG_UPDATE_OFFER = 13, /* host -> client: u32 size, 64-byte SHA-512, version */
     G4_MSG_UPDATE_REQ   = 14, /* client -> host: send it (no payload)            */
     G4_MSG_UPDATE_DATA  = 15, /* host -> client: u32 offset, then bytes          */
-    G4_MSG_BRIGHTNESS   = 16  /* host -> client: u16 0..1000, or 0xFFFF = back to its own (0.12+) */
+    G4_MSG_BRIGHTNESS   = 16, /* host -> client: u16 0..1000, or 0xFFFF = back to its own (0.12+) */
+    /* keyboard, mouse and sound (0.13+) */
+    G4_MSG_INPUT        = 17, /* client -> host: u32 sequence, events (8 bytes each),
+                                 then a 16-byte MAC (g4_input_mac) over all before it */
+    G4_MSG_INPUT_ON     = 18, /* host -> client: u8 1 = send me your keyboard and mouse
+                                 while you show my screen, 0 = stop */
+    G4_MSG_AUDIO        = 19  /* host -> client: a packet of sound (G4_AUDIO_*) */
 };
+
+/* G4_MSG_INPUT events, 8 bytes: kind, then fields (big-endian, rest zero).
+   Key codes are Mac virtual key codes, the same from Tiger to today. */
+#define G4_INPUT_EVENT_LEN  8
+#define G4_INPUT_MAC_LEN    16
+#define G4_INPUT_MAX_EVENTS 64
+enum {
+    G4_IN_MOUSE  = 1,   /* [1] buttons (bit 0 left, 1 right, 2 middle), [2] i16 x, [4] i16 y:
+                           the pointer in the client's pixels (0,0 = top left) */
+    G4_IN_KEY    = 2,   /* [1] key code, [2] 1 = down, 0 = up */
+    G4_IN_SCROLL = 3    /* [2] i16 dy, [4] i16 dx, in tenths of a line (+ = up / left) */
+};
+
+/* G4_MSG_AUDIO: u32 sequence, u32 sample rate, u16 frames (even), u8 channels
+   (1 or 2), u8 format (G4_AUDIO_ADPCM); then per channel: i16 predictor,
+   u8 step index, u8 0, frames/2 bytes of 4-bit IMA ADPCM codes (first
+   sample in the low nibble). Each packet decodes on its own. */
+#define G4_AUDIO_HDR        12
+#define G4_AUDIO_ADPCM      1
+#define G4_AUDIO_MAX_FRAMES 4096
 
 /* AUTH_FAIL reasons */
 #define G4_AUTH_UNKNOWN_HOST  1   /* not paired with this host (or bad proof) */
@@ -101,6 +127,8 @@ enum {
 #define G4_HELLO_FLAG_SLEEP 0x08   /* client sleeps on G4_MSG_SLEEP; HELLO is 6 bytes longer:
                                       its Ethernet address (for Wake-on-LAN) at offset 80 */
 #define G4_HELLO_MAC_LEN    (G4_HELLO_V2_LEN + 6)
+#define G4_HELLO_FLAG_INPUT 0x20   /* client can send its keyboard and mouse (G4_MSG_INPUT) */
+#define G4_HELLO_FLAG_AUDIO 0x40   /* client can play sound (G4_MSG_AUDIO) */
 
 /* tile cache: 32x32 tiles the client keeps so content it has seen before
    (menus closing, switching apps back, caret blink) costs 12 bytes */
@@ -249,6 +277,19 @@ void g4dec_free(g4_decoder *d);
 void g4dec_reset_dirty(g4_decoder *d);
 /* apply a FRAME payload (header stripped). 0 = ok, <0 = malformed */
 int  g4dec_frame(g4_decoder *d, const uint8_t *p, size_t len, uint32_t *frame_id);
+
+/* IMA ADPCM sound (4 bits a sample). The encoder keeps one state per
+   channel across packets; each packet records the state it starts from. */
+typedef struct { int pred, index; } g4_adpcm_state;
+/* interleaved 16-bit samples -> the per-channel blocks of a G4_MSG_AUDIO
+   packet (after its header). frames must be even. Returns bytes written:
+   channels * (4 + frames / 2). */
+size_t g4_adpcm_encode(g4_adpcm_state *st, const int16_t *in, unsigned frames,
+                       unsigned channels, uint8_t *out);
+/* a whole G4_MSG_AUDIO payload -> interleaved 16-bit samples (up to
+   max_frames). Returns frames decoded, -1 = malformed. rate/channels: out. */
+int    g4_audio_decode(const uint8_t *p, size_t len, int16_t *out, unsigned max_frames,
+                       unsigned *rate, unsigned *channels);
 
 #ifdef __cplusplus
 }

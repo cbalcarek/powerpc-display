@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 #define W 1440
 #define H 900
@@ -519,9 +520,63 @@ static int run_yuv(void)
     return fails;
 }
 
+/* sound: 2 s of a chord with some noise, in 20 ms packets that each decode
+   on their own; quality (signal to noise) and rejecting bad packets */
+static int run_audio(void)
+{
+    enum { RATE = 48000, N = 960, PKTS = 100 };
+    static int16_t in[N * 2], out[G4_AUDIO_MAX_FRAMES * 2];
+    static uint8_t pkt[G4_AUDIO_HDR + 2 * (4 + N / 2)];
+    g4_adpcm_state st[2] = { { 0, 0 }, { 0, 0 } };
+    double sig = 0, err = 0;
+    unsigned seed = 1, rate, ch, k, i;
+    int fails = 0;
+    FILE *dump = getenv("AUDIO_DUMP") ? fopen(getenv("AUDIO_DUMP"), "wb") : NULL;
+    long t = 0;
+    for (k = 0; k < PKTS; k++) {
+        size_t bl;
+        int f;
+        for (i = 0; i < N; i++, t++) {
+            double v = 6000 * sin(2 * M_PI * 220 * t / RATE) + 4000 * sin(2 * M_PI * 330 * t / RATE)
+                     + 3000 * sin(2 * M_PI * 1760 * t / RATE);
+            seed = seed * 1103515245u + 12345u;
+            in[2 * i] = (int16_t)(v + (int)((seed >> 16) % 600) - 300);
+            in[2 * i + 1] = (int16_t)(-v * 0.7);
+        }
+        g4_put32(pkt, k); g4_put32(pkt + 4, RATE); g4_put16(pkt + 8, N); pkt[10] = 2; pkt[11] = G4_AUDIO_ADPCM;
+        bl = g4_adpcm_encode(st, in, N, 2, pkt + G4_AUDIO_HDR);
+        if (bl != 2 * (4 + N / 2)) { printf("audio: encoded %u bytes, expected %u\n", (unsigned)bl, 2 * (4 + N / 2)); return 1; }
+        if (dump) { fwrite(pkt, 1, sizeof pkt, dump); fwrite(in, sizeof in[0], N * 2, dump); }
+        f = g4_audio_decode(pkt, sizeof pkt, out, G4_AUDIO_MAX_FRAMES, &rate, &ch);
+        if (f != N || rate != RATE || ch != 2) { printf("audio: decode gave %d frames %u Hz %u ch\n", f, rate, ch); return 1; }
+        for (i = 0; i < N * 2; i++) { double d = (double)in[i] - out[i]; sig += (double)in[i] * in[i]; err += d * d; }
+    }
+    if (dump) fclose(dump);
+    {
+        double snr = 10 * log10(sig / (err > 0 ? err : 1));
+        printf("audio: %d packets of %d frames, %u bytes each (%.0f KB/s), SNR %.1f dB\n",
+               PKTS, N, (unsigned)sizeof pkt, sizeof pkt * 50 / 1024.0, snr);
+        if (snr < 25) { printf("audio: quality too low\n"); fails++; }
+    }
+    /* bad packets are refused, not crashed on */
+    if (g4_audio_decode(pkt, sizeof pkt - 1, out, G4_AUDIO_MAX_FRAMES, &rate, &ch) != -1) { printf("audio: short packet accepted\n"); fails++; }
+    pkt[11] = 9;
+    if (g4_audio_decode(pkt, sizeof pkt, out, G4_AUDIO_MAX_FRAMES, &rate, &ch) != -1) { printf("audio: bad format accepted\n"); fails++; }
+    pkt[11] = G4_AUDIO_ADPCM; pkt[G4_AUDIO_HDR + 2] = 120;
+    if (g4_audio_decode(pkt, sizeof pkt, out, G4_AUDIO_MAX_FRAMES, &rate, &ch) != -1) { printf("audio: bad step index accepted\n"); fails++; }
+    pkt[G4_AUDIO_HDR + 2] = 0;
+    if (g4_audio_decode(pkt, sizeof pkt, out, N - 2, &rate, &ch) != -1) { printf("audio: too many frames accepted\n"); fails++; }
+    return fails;
+}
+
 int main(int argc, char **argv)
 {
     int fails = lz4_selftest();
+    if (argc > 1 && !strcmp(argv[1], "audio")) {
+        fails += run_audio();
+        printf(fails ? "\nFAILED (%d)\n" : "\nALL TESTS PASSED\n", fails);
+        return fails != 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "yuv")) {          /* just the video path + dirty rects */
         fails += run_yuv();
         fails += run_rects(32, 0); fails += run_rects(32, 1); fails += run_rects(16, 0);
@@ -535,6 +590,7 @@ int main(int argc, char **argv)
     fails += run(16, G4_DEFAULT_SLOTS, 1);
     fails += run_yuv();
     fails += run_rects(32, 0); fails += run_rects(32, 1); fails += run_rects(16, 0);
+    fails += run_audio();
     printf(fails ? "\nFAILED (%d)\n" : "\nALL TESTS PASSED\n", fails);
     return fails != 0;
 }

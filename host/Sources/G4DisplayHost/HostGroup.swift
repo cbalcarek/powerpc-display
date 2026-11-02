@@ -94,6 +94,11 @@ final class HostGroup {
         }
         h.onDisplayCreated = { [weak self] id in self?.displayCreated(id) }
         h.setHeadless(isHeadless)
+        h.setUseInput(useInput)
+        // sound plays on one PowerPC Mac at a time: the one it was last chosen for
+        if let name, UserDefaults.standard.string(forKey: Self.soundKey) == name, !hosts.contains(where: { $0 !== h && $0.soundOn }) {
+            h.setSound(true)
+        }
         onAdd?(h)
         if !enabled { h.setEnabled(false) }
         h.start()
@@ -126,6 +131,27 @@ final class HostGroup {
     func setMirror(_ on: Bool, for h: Host) {
         h.setMirror(on)
         if let name = h.macName { UserDefaults.standard.set(on, forKey: Self.mirrorKey(name)) }
+    }
+
+    private static let soundKey = "soundOn"           // the name of the Mac that plays sound
+    private static let inputKey = "useInput"
+
+    /// Play this Mac's sound on one PowerPC Mac (and stop on the others).
+    func setSound(_ on: Bool, for h: Host) {
+        for other in hosts where other !== h && on { other.setSound(false) }
+        h.setSound(on)
+        if on, let name = h.macName { UserDefaults.standard.set(name, forKey: Self.soundKey) }
+        else if !on, UserDefaults.standard.string(forKey: Self.soundKey) == h.macName {
+            UserDefaults.standard.removeObject(forKey: Self.soundKey)
+        }
+    }
+
+    /// Take the PowerPC Macs' keyboards and mice (all of them).
+    private(set) var useInput = UserDefaults.standard.object(forKey: "useInput") as? Bool ?? true
+    func setUseInput(_ on: Bool) {
+        useInput = on
+        UserDefaults.standard.set(on, forKey: Self.inputKey)
+        hosts.forEach { $0.setUseInput(on) }
     }
 
     /// Disconnect (its display is removed) or connect one PowerPC Mac.
