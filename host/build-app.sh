@@ -10,21 +10,38 @@ cd "$(dirname "$0")"
 # "swift build --arch arm64 --arch x86_64" needs the full Xcode; this works
 # with just the Command Line Tools too.)
 ARCHS="${ARCHS:-arm64 x86_64}"
+MINOS=14.0              # oldest macOS it runs on (also LSMinimumSystemVersion below)
+OUT="$(mktemp -d)"
 SLICES=""
 for A in $ARCHS; do
     echo "Building for $A..."
-    if swift build -c release --arch "$A"; then
-        SLICES="$SLICES $(swift build -c release --arch "$A" --show-bin-path)/PowerPCDisplay"
+    # its own build folder per architecture (newer Xcodes put every
+    # architecture's result in the same place), and an explicit target so
+    # the minimum macOS stays $MINOS whatever Xcode defaults to
+    SCRATCH=".build/$A"
+    if swift build -c release --scratch-path "$SCRATCH" --triple "$A-apple-macosx$MINOS"; then
+        B="$(swift build -c release --scratch-path "$SCRATCH" --triple "$A-apple-macosx$MINOS" --show-bin-path)/PowerPCDisplay"
+        if [ "$(lipo -archs "$B" 2>/dev/null)" != "$A" ]; then
+            echo "The $A build produced $(lipo -archs "$B" 2>/dev/null) instead."
+            exit 1
+        fi
+        cp "$B" "$OUT/PowerPCDisplay-$A"
+        SLICES="$SLICES $OUT/PowerPCDisplay-$A"
     elif [ "$A" = x86_64 ] && [ -n "$SLICES" ]; then
         echo "WARNING: the Intel build failed (errors above), so this app is Apple Silicon only."
     else
         exit 1
     fi
 done
-BIN="$(mktemp -d)/PowerPCDisplay"
+BIN="$OUT/PowerPCDisplay"
 # shellcheck disable=SC2086
 lipo -create $SLICES -output "$BIN"
 echo "Built for: $(lipo -archs "$BIN")"
+MIN_BUILT="$(vtool -show-build "$BIN" 2>/dev/null | awk '/minos/ { print $2; exit }')"
+[ -n "$MIN_BUILT" ] && echo "Runs on macOS $MIN_BUILT and later."
+if [ -n "$MIN_BUILT" ] && [ "$MIN_BUILT" != "$MINOS" ]; then
+    echo "WARNING: expected macOS $MINOS as the minimum, got $MIN_BUILT."
+fi
 
 APP="build/PowerPC Display.app"
 rm -rf "$APP"

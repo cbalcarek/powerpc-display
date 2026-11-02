@@ -41,6 +41,11 @@ extension Host {
         return true
     }
 
+    /// (Not async: NSLock can't be used directly from async code.)
+    func storeStream(_ s: SCStream, _ c: SCStreamConfiguration) {
+        lock.lock(); _stream = s; _scConfig = c; lock.unlock()
+    }
+
     /// Remove the virtual display (it disappears from System Settings › Displays).
     func releaseDisplay() {
         guard vdisplay != nil else { return }
@@ -100,7 +105,7 @@ extension Host {
         try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: encQ)
         if canAudio { try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQ) }
         try await s.startCapture()
-        lock.lock(); _stream = s; _scConfig = sc; lock.unlock()
+        storeStream(s, sc)
         encQ.sync {
             audioOn = wantsAudio
             if wantsAudio { log("playing this Mac's sound on “\(peerName)”") }
