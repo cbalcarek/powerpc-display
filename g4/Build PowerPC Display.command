@@ -156,6 +156,7 @@ if ditto -c -k --keepParent "$APP" "$ZIP" 2>/dev/null; then
     HOSTS=""
     [ -f .m1host ] && HOSTS="`cat .m1host`"
     [ -f .m1hosts ] && HOSTS="$HOSTS `cat .m1hosts`"
+    HOSTS="$HOSTS 10.0.2.2 192.168.64.1"      # where a UTM VM sees its Mac
     for h in $HOSTS; do
         if curl -fsS --connect-timeout 3 -m 60 -T "$ZIP" "http://$h:8000/releases/$ZIP" 2>/dev/null; then
             SENT=$h; break
@@ -165,8 +166,10 @@ if ditto -c -k --keepParent "$APP" "$ZIP" 2>/dev/null; then
         echo "Sent $ZIP to your Mac at $SENT (g4display/releases)."
     else
         echo "Made $ZIP, but couldn't reach your Mac to send it."
-        echo "Is Share with PowerPC Mac.command running there? To send it by hand:"
-        echo "  curl -T \"`pwd`/$ZIP\" http://YOUR-MAC.local:8000/releases/$ZIP"
+        echo "Tried: $HOSTS"
+        echo "Is Share with PowerPC Mac.command running there? Start it, then send it by hand"
+        echo "(use your Mac's name, e.g. Colins-iMac.local; in a UTM VM, 192.168.64.1 or 10.0.2.2):"
+        echo "  curl -T \"`pwd`/$ZIP\" http://192.168.64.1:8000/releases/$ZIP"
     fi
 fi
 
