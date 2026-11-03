@@ -1,0 +1,127 @@
+# Notes for Claude: building, testing and shipping PowerPC Display
+
+Read this before giving Colin build or release instructions. Every pitfall
+below has actually happened. Give exact commands to copy (never placeholders
+like `YOUR-MAC.local`), in the order below, and say what success looks like
+at each step.
+
+## The machines
+
+- **Colin's Mac:** M1 iMac, "Colins-iMac-2" (Bonjour `Colins-iMac-2.local`),
+  newest Xcode (27.x SDK as of Nov 2026). The project folder on it is
+  `/Users/colinbalcarek/Downloads/g4display`. When this session is linked to
+  that computer, it's mounted in the remote-devices shell as
+  `~/mnt/g4display`.
+- **The Tiger build machine:** a Mac OS X 10.4 VM in UTM on the M1 (QEMU; it
+  reports itself as "Power Mac G4 AGP"). It builds the PowerPC app. Real
+  PowerPC Macs: iMac G4 17" ("admin's iMac", 1440x900) and a G3 iBook
+  ("Colin Balcarek's iBook", 1024x768, Rage 128).
+- **GitHub:** repo `cbalcarek/powerpc-display` (the in-app update check needs it public). Commits go straight to
+  `main`, as they have throughout.
+
+## Getting changes onto Colin's Mac
+
+Edit in the cloud copy of the repo, then copy each changed file to his Mac:
+stage it under `/mnt/user-data/outputs/...` and run `device_commit_files`.
+Copied files lose their execute bit, so afterwards run `chmod 755` on any
+`*.command` and `*.sh` you sent, in the remote-devices shell. Check that the
+copies match by comparing md5 sums of the source files on both sides.
+
+## Build order: PowerPC app first, then the Mac app
+
+The Mac app bundles `releases/PowerPC-Display-PPC.zip`, so the PowerPC zip
+has to reach the Mac before the Mac app is built.
+
+### 1. PowerPC app (in the Tiger VM)
+
+1. On the M1: double-click **Share with PowerPC Mac.command** and leave it
+   open (it serves the folder on port 8000 and accepts the built zip).
+2. On the M1: double-click **Make ISO for UTM.command**. It writes
+   `~/Downloads/g4display.iso`.
+   - **Eject the old g4display disc in Tiger first.** If the ISO is replaced
+     while Tiger has it mounted, Tiger reads garbage. The symptom: the build
+     script fails on line 1 with nonsense like `ists: command not found`
+     and README text in the error.
+   - Then in UTM, choose the ISO again for the CD drive (restart the VM if
+     the disc doesn't appear).
+3. In Tiger: open the disc and double-click
+   `g4display/g4/Build PowerPC Display.command`. It copies itself off the
+   read-only CD to `~/g4display` and builds five steps (pairing code, then
+   ppc750, 7400, 7450, 970).
+   - Success looks like this:
+     - `One app for G3, G4 and G5: ppc750 ppc7400 ppc7450 ppc970`
+     - `Sent PowerPC-Display-PPC.zip to your Mac at …`
+     - the Share window prints `received releases/PowerPC-Display-PPC.zip`.
+   - The build tries `.m1host`, `.m1hosts` (written by make-iso.sh:
+     `10.0.2.2 192.168.64.1 Colins-iMac-2.local`), then `10.0.2.2` and
+     `192.168.64.1`.
+4. If the zip didn't arrive (it failed on 2026-11-02, cause not confirmed):
+   - Run `curl -T ~/g4display/g4/PowerPC-Display-PPC.zip http://10.0.2.2:8000/releases/PowerPC-Display-PPC.zip`
+     in Tiger. In UTM's emulated network the Mac is `10.0.2.2`; in Shared
+     Network it's `192.168.64.1`. Tiger's own IP shows which: 10.0.2.x or
+     192.168.64.x.
+   - "couldn't connect" while Share is running points at the Mac's firewall
+     blocking `python3`. An Xcode update can replace python3, so macOS treats
+     it as a new app. Fix: System Settings › Network › Firewall › Options.
+   - It worked in the 0.11/0.12 builds, so suspect something that changed on
+     the Mac since.
+5. `update.sh` (fetch source over the network instead of the disc) must run
+   from `~/g4display/g4`, never from the read-only CD.
+
+### 2. Mac app (on the M1)
+
+Double-click **Build Mac App.command**. It builds arm64 and x86_64
+separately (`host/build-app.sh`, each in `.build/<arch>` with an explicit
+`<arch>-apple-macosx14.0` triple), joins them with lipo, signs with the
+local certificate, installs to /Applications, and writes
+`releases/PowerPC-Display-Mac.zip`.
+
+- Success looks like:
+  - `Built for: x86_64 arm64`
+  - `Runs on macOS 14.0 and later.`
+- **After any Xcode update** the first build stops at the licence:
+  `Agreeing to the Xcode and Apple SDKs license requires admin privileges`.
+  Fix: `sudo xcodebuild -license accept` in Terminal, then build again.
+- Newer Xcodes put every architecture in `.build/out`, which is why each
+  build has its own scratch path; otherwise lipo fails with "same
+  architectures".
+- Harmless warnings: `g4nacl.c … loses integer precision`,
+  `AppUpdater … Sendable`, and `x86_64 architecture is deprecated`.
+
+### 3. The PowerPC Macs
+
+They update from the M1: open PowerPC Display on the G4 or G3, let the M1
+connect, and choose **Install Update…**. If it's greyed out, Disconnect and
+then Connect from the M1 (the offer is made on connect, and rechecked every
+30 s).
+
+## Releases
+
+- Attach exactly `PowerPC-Display-Mac.zip` (Universal; `-M1.zip` in 0.11
+  and 0.12) and `PowerPC-Display-PPC.zip`.
+- Never attach both `-M1` and `-Mac`: 0.12's updater would prefer `-M1`.
+- Versions are set in `host/build-app.sh` and
+  `g4/Build PowerPC Display.command` (CFBundleShortVersionString and
+  CFBundleVersion). 0.11 shipped; check GitHub for 0.12; 0.13 is built,
+  not released. Bump both files for the next release.
+- Give release notes plus a prefilled
+  `https://github.com/cbalcarek/powerpc-display/releases/new?tag=…&title=…&body=…`
+  link. Suggest **pre-release** until he has tested on hardware: installed
+  copies offer any published release to themselves.
+
+## Checking work here (Linux cloud session)
+
+- Swift can't be compiled here. Review it carefully, because Colin's build
+  is the first compile. Watch for things newer Xcode flags: NSLock in async
+  functions, and Sendable captures.
+- `test/test_codec.c`: build with
+  `gcc -O2 -I host/Sources/CCodec/include test/test_codec.c host/Sources/CCodec/g4codec.c host/Sources/CCodec/g4yuv_altivec.c -lm`.
+  `./a.out audio` runs just the sound test; the full suite takes a few
+  minutes.
+- `sh test/sim/run.sh` runs the PowerPC client against fake Tiger APIs and a
+  fake Mac: keyboard/mouse signing, sound playback, and the picture stream.
+- Big-endian check: `powerpc-linux-gnu-gcc -static -mcpu=750` and `qemu-ppc -cpu 750`
+  (both installed) run codec code as a G3 would.
+- Tiger's gcc 4.0 limits: C89-style declarations at the top of blocks, no
+  `__sync` builtins (use `OSMemoryBarrier`), and it can run out of memory on
+  big AltiVec files (that's why AltiVec lives in `g4yuv_altivec.c`).

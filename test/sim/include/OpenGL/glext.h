@@ -1,0 +1,6 @@
+#define GL_TEXTURE_RECTANGLE_EXT 100
+#define GL_MAX_RECTANGLE_TEXTURE_SIZE_EXT 0x84F8
+#define GL_TEXTURE_STORAGE_HINT_APPLE 101
+#define GL_STORAGE_CACHED_APPLE 102
+#define GL_UNPACK_CLIENT_STORAGE_APPLE 103
+void glTextureRangeAPPLE(GLenum, GLsizei, const void*); void glFinishObjectAPPLE(GLenum, GLint);
