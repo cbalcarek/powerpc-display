@@ -378,6 +378,23 @@ normal and the PowerPC Macs stay on.) Turn the whole thing off on the PowerPC Ma
 - PowerPC Mac: `~/Library/Logs/PowerPC Display.log` (previous run in
   `.log.old`); open it with Console.app on Tiger.
 
+## Rebuilding both apps (after changing the code)
+
+1. On the Apple Silicon Mac, double-click **Rebuild Both Apps.command**. It
+   shares the folder and waits.
+2. In Tiger (the UTM VM), double-click **Get Latest and Build.command** in
+   `~/g4display/g4`. It fetches the latest source from the Mac, builds the
+   PowerPC app and sends it back. (The first time, if that file isn't there
+   yet, run `sh ~/g4display/g4/update.sh 10.0.2.2` in Tiger's Terminal. In a
+   UTM VM the Mac is at 10.0.2.2; on a real PowerPC Mac use the Mac's name,
+   e.g. `Colins-iMac-2.local`.)
+3. The Mac's window sees the new PowerPC app arrive, stops sharing and builds
+   the Mac app with it inside, then installs and opens it. Connected PowerPC
+   Macs are offered the new version (Install Update…).
+
+If Xcode was updated since the last build, run `sudo xcodebuild -license accept`
+first.
+
 ## Releases
 
 Each build also saves a zip for GitHub releases in `releases/` (not part of

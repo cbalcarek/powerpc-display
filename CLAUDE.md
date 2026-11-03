@@ -32,7 +32,23 @@ copies match by comparing md5 sums of the source files on both sides.
 The Mac app bundles `releases/PowerPC-Display-PPC.zip`, so the PowerPC zip
 has to reach the Mac before the Mac app is built.
 
-### 1. PowerPC app (in the Tiger VM)
+### The easy way (since 2026-11-03): one double-click on each Mac
+
+1. On the M1: double-click **Rebuild Both Apps.command**. It shares the
+   folder on port 8000 and waits.
+2. In Tiger: double-click **Get Latest and Build.command** in
+   `~/g4display/g4`. It runs `update.sh`, which downloads the latest source
+   from the M1, builds, and sends the zip back.
+   - Before that file exists in Tiger (anything older than this change), run
+     once in Tiger's Terminal: `sh ~/g4display/g4/update.sh 10.0.2.2`
+3. The M1 window notices the zip, stops sharing, and runs Build Mac App by
+   itself (installs and opens the app).
+
+No disc needed. **The Tiger VM reaches the M1 at `10.0.2.2`** (UTM emulated
+network; confirmed 2026-11-03; `192.168.64.1` doesn't work for this VM).
+`update.sh` remembers the address that worked in `g4/.m1host`.
+
+### The disc way (first setup, or if the network route breaks)
 
 1. On the M1: double-click **Share with PowerPC Mac.command** and leave it
    open (it serves the folder on port 8000 and accepts the built zip).
@@ -52,21 +68,14 @@ has to reach the Mac before the Mac app is built.
      - `One app for G3, G4 and G5: ppc750 ppc7400 ppc7450 ppc970`
      - `Sent PowerPC-Display-PPC.zip to your Mac at …`
      - the Share window prints `received releases/PowerPC-Display-PPC.zip`.
-   - The build tries `.m1host`, `.m1hosts` (written by make-iso.sh:
-     `10.0.2.2 192.168.64.1 Colins-iMac-2.local`), then `10.0.2.2` and
-     `192.168.64.1`.
-4. If the zip didn't arrive (it failed on 2026-11-02, cause not confirmed):
-   - Run `curl -T ~/g4display/g4/PowerPC-Display-PPC.zip http://10.0.2.2:8000/releases/PowerPC-Display-PPC.zip`
-     in Tiger. In UTM's emulated network the Mac is `10.0.2.2`; in Shared
-     Network it's `192.168.64.1`. Tiger's own IP shows which: 10.0.2.x or
-     192.168.64.x.
+4. If the zip didn't arrive, in Tiger run:
+   `curl -T ~/g4display/g4/PowerPC-Display-PPC.zip http://10.0.2.2:8000/releases/PowerPC-Display-PPC.zip`
+   - On 2026-11-02 the automatic send failed but this command worked. The
+     likely cause was the old 60-second limit on the upload (the VM's
+     emulated network is slow), now raised to 15 minutes.
    - "couldn't connect" while Share is running points at the Mac's firewall
-     blocking `python3`. An Xcode update can replace python3, so macOS treats
-     it as a new app. Fix: System Settings › Network › Firewall › Options.
-   - It worked in the 0.11/0.12 builds, so suspect something that changed on
-     the Mac since.
-5. `update.sh` (fetch source over the network instead of the disc) must run
-   from `~/g4display/g4`, never from the read-only CD.
+     blocking `python3`.
+5. `update.sh` must run from `~/g4display/g4`, never from the read-only CD.
 
 ### 2. Mac app (on the M1)
 

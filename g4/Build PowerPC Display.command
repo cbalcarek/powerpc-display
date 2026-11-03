@@ -158,7 +158,8 @@ if ditto -c -k --keepParent "$APP" "$ZIP" 2>/dev/null; then
     [ -f .m1hosts ] && HOSTS="$HOSTS `cat .m1hosts`"
     HOSTS="$HOSTS 10.0.2.2 192.168.64.1"      # where a UTM VM sees its Mac
     for h in $HOSTS; do
-        if curl -fsS --connect-timeout 3 -m 60 -T "$ZIP" "http://$h:8000/releases/$ZIP" 2>/dev/null; then
+        # no short time limit: a UTM VM's emulated network uploads slowly
+        if curl -fsS --connect-timeout 3 -m 900 -T "$ZIP" "http://$h:8000/releases/$ZIP" 2>/dev/null; then
             SENT=$h; break
         fi
     done

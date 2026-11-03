@@ -8,7 +8,7 @@ OUT="$(cd .. && pwd)/g4display.iso"
 TMP="$(mktemp -d)"
 mkdir -p "$TMP/g4display/host/Sources"
 mkdir -p "$TMP/g4display/g4"
-for f in client.c app.m g4client.h AppIcon.icns update.sh "Build PowerPC Display.command"; do
+for f in client.c app.m g4client.h AppIcon.icns update.sh "Build PowerPC Display.command" "Get Latest and Build.command"; do
     cp "g4/$f" "$TMP/g4display/g4/"
 done
 cp -R host/Sources/CCodec "$TMP/g4display/host/Sources/"
