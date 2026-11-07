@@ -297,16 +297,16 @@ Here** in its menu): this Mac's sound plays on that PowerPC Mac's speakers.
 One PowerPC Mac at a time; choosing another moves it there. It's off until
 you turn it on, and remembered.
 
-- It's captured with the screen (ScreenCaptureKit, 48 kHz stereo) and sent
-  as IMA ADPCM, 4 bits a sample: about 48 KB/s, next to several MB/s for the
-  picture, and cheap enough for a G3 to play. Quality is like a good
-  cassette (about 39 dB signal to noise in the tests).
+- While it plays there, this Mac is silent: it's captured with a Core Audio
+  tap (macOS 14.2+) that mutes it here, and this Mac plays its sound again
+  when you turn it off or the PowerPC Mac disconnects. macOS asks once for
+  **System Audio Recording** permission. If the tap can't be set up, sound is
+  captured with the screen instead (ScreenCaptureKit) and plays on both.
+- It's sent as IMA ADPCM, 4 bits a sample: about 48 KB/s, next to several
+  MB/s for the picture, and cheap enough for a G3 to play. Quality is like a
+  good cassette (about 39 dB signal to noise in the tests).
 - The PowerPC Mac buffers about 60 ms before playing, so sound runs roughly
   in step with the picture (which is itself a few tens of ms behind).
-- This Mac keeps playing the sound too. Turn its own volume down if you
-  only want it on the PowerPC Mac (check that the PowerPC Mac still gets it:
-  whether macOS captures sound before or after the volume control hasn't
-  been tested yet).
 
 ## Brightness
 

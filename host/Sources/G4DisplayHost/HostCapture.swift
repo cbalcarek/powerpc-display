@@ -73,8 +73,8 @@ extension Host {
         sc.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         sc.queueDepth = 4
         sc.colorSpaceName = CGColorSpace.sRGB
-        let (wantsAudio, canAudio) = encQ.sync { (clientAudio && soundOn, clientAudio) }
-        configureAudio(sc, on: wantsAudio)
+        let canAudio = encQ.sync { clientAudio }
+        configureAudio(sc, on: false)       // sound starts after capture (refreshAudioOn)
         // map display points -> PowerPC pixels. Extend: the virtual display is
         // the PowerPC Mac's size. Mirror: scale the main display and letterbox it.
         let dw = CGFloat(max(display.width, 1)), dh = CGFloat(max(display.height, 1))
@@ -106,9 +106,9 @@ extension Host {
         if canAudio { try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQ) }
         try await s.startCapture()
         storeStream(s, sc)
-        encQ.sync {
-            audioOn = wantsAudio
-            if wantsAudio { log("playing this Mac's sound on “\(peerName)”") }
+        encQ.async {
+            self.audioOn = false
+            self.refreshAudioOn()
         }
     }
 

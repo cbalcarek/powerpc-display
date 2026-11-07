@@ -118,6 +118,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     var clientAudio = false                    // ...and play sound (0.13+)
     var sentInputOn = false                    // we asked it for its keyboard and mouse
     var audioOn = false                        // capturing sound for it
+    var audioTap: AnyObject?                   // SystemAudioTap while capturing that way (encQ)
     // --- sound being packed (audioQ) ---
     var adpcm = [g4_adpcm_state](repeating: g4_adpcm_state(pred: 0, index: 0), count: 2)
     var audioPending: [Int16] = []             // interleaved stereo, waiting for a whole packet

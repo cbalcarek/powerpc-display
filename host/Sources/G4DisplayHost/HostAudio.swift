@@ -4,10 +4,13 @@ import CoreMedia
 import Foundation
 import ScreenCaptureKit
 
-// This Mac's sound, played on the PowerPC Mac. ScreenCaptureKit captures it
-// along with the screen (48 kHz stereo); every 20 ms of it goes out as IMA
-// ADPCM (4 bits a sample, about 48 KB/s), which even a G3 decodes almost for
-// free. One PowerPC Mac at a time plays it (see HostGroup.setSound).
+// This Mac's sound, played on the PowerPC Mac instead of here. A Core Audio
+// tap (macOS 14.2+) captures everything this Mac plays and mutes it here
+// while it's being captured; if that can't be set up, ScreenCaptureKit
+// captures it along with the screen (and it plays on both). Every 20 ms of it
+// goes out as IMA ADPCM (4 bits a sample, about 48 KB/s at 48 kHz), which even
+// a G3 decodes almost for free. One PowerPC Mac at a time plays it (see
+// HostGroup.setSound).
 
 extension Host {
     static let audioRate = 48_000
@@ -27,9 +30,35 @@ extension Host {
         lock.lock(); let s = _stream, conf = _scConfig; lock.unlock()
         guard let s, let conf else { return }
         audioOn = want
-        conf.capturesAudio = want
+        if want {
+            if #available(macOS 14.2, *) {
+                let tap = SystemAudioTap(queue: audioQ) { [weak self] abl, f in self?.appendAudio(abl, f) }
+                if tap.start() {
+                    audioTap = tap
+                    log("playing this Mac's sound on “\(peerName)” (muted here meanwhile)")
+                    return
+                }
+                log("couldn't capture sound with a Core Audio tap; it will play on both Macs")
+            }
+            setCaptureAudio(true, s, conf)
+            log("playing this Mac's sound on “\(peerName)” (and here)")
+        } else {
+            stopSound()
+            log("stopped playing sound on “\(peerName)”")
+        }
+    }
+
+    /// encQ: stop capturing sound (this Mac plays it again).
+    func stopSound() {
+        if #available(macOS 14.2, *), let tap = audioTap as? SystemAudioTap { tap.stop() }
+        audioTap = nil
+        lock.lock(); let s = _stream, conf = _scConfig; lock.unlock()
+        if let s, let conf, conf.capturesAudio { setCaptureAudio(false, s, conf) }
+    }
+
+    private func setCaptureAudio(_ on: Bool, _ s: SCStream, _ conf: SCStreamConfiguration) {
+        conf.capturesAudio = on
         Task { try? await s.updateConfiguration(conf) }
-        log(want ? "playing this Mac's sound on “\(peerName)”" : "stopped playing sound on “\(peerName)”")
     }
 
     /// Sound settings for a new capture (encQ state read by the caller).
@@ -40,30 +69,33 @@ extension Host {
         sc.excludesCurrentProcessAudio = true
     }
 
-    /// audioQ: a buffer of captured sound -> 20 ms ADPCM packets.
+    /// audioQ: sound from ScreenCaptureKit (the fallback).
     func handleAudio(_ sb: CMSampleBuffer) {
-        guard let f = sb.formatDescription?.audioStreamBasicDescription,
-              f.mFormatID == kAudioFormatLinearPCM, f.mBitsPerChannel == 32,
-              f.mFormatFlags & kAudioFormatFlagIsFloat != 0, f.mChannelsPerFrame >= 1 else { return }
-        let frames = CMSampleBufferGetNumSamples(sb)
-        guard frames > 0 else { return }
+        guard let f = sb.formatDescription?.audioStreamBasicDescription else { return }
+        try? sb.withAudioBufferList { abl, _ in appendAudio(abl, f) }
+    }
+
+    /// audioQ: captured float sound -> 20 ms ADPCM packets.
+    func appendAudio(_ abl: UnsafeMutableAudioBufferListPointer, _ f: AudioStreamBasicDescription) {
+        guard f.mFormatID == kAudioFormatLinearPCM, f.mBitsPerChannel == 32,
+              f.mFormatFlags & kAudioFormatFlagIsFloat != 0, f.mChannelsPerFrame >= 1,
+              let first = abl.first, first.mData != nil else { return }
         let ch = Int(f.mChannelsPerFrame)
         let planar = f.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0
+        let frames = Int(first.mDataByteSize) / (planar ? 4 : 4 * ch)
+        guard frames > 0, let d0 = first.mData else { return }
         @inline(__always) func s16(_ v: Float) -> Int16 { Int16(max(-1, min(1, v)) * 32767) }
-        try? sb.withAudioBufferList { abl, _ in
-            guard let d0 = abl.first?.mData else { return }
-            var out = [Int16](repeating: 0, count: frames * 2)
-            if planar {
-                let l = d0.assumingMemoryBound(to: Float.self)
-                let r = (abl.count > 1 ? abl[1].mData : nil)?.assumingMemoryBound(to: Float.self) ?? l
-                for i in 0..<frames { out[2 * i] = s16(l[i]); out[2 * i + 1] = s16(r[i]) }
-            } else {
-                let p = d0.assumingMemoryBound(to: Float.self)
-                let right = ch > 1 ? 1 : 0
-                for i in 0..<frames { out[2 * i] = s16(p[i * ch]); out[2 * i + 1] = s16(p[i * ch + right]) }
-            }
-            audioPending.append(contentsOf: out)
+        var out = [Int16](repeating: 0, count: frames * 2)
+        if planar {
+            let l = d0.assumingMemoryBound(to: Float.self)
+            let r = (abl.count > 1 ? abl[1].mData : nil)?.assumingMemoryBound(to: Float.self) ?? l
+            for i in 0..<frames { out[2 * i] = s16(l[i]); out[2 * i + 1] = s16(r[i]) }
+        } else {
+            let p = d0.assumingMemoryBound(to: Float.self)
+            let right = ch > 1 ? 1 : 0
+            for i in 0..<frames { out[2 * i] = s16(p[i * ch]); out[2 * i + 1] = s16(p[i * ch + right]) }
         }
+        audioPending.append(contentsOf: out)
         let rate = UInt32(f.mSampleRate.rounded())
         let n = Self.audioPacketFrames
         while audioPending.count >= n * 2 {

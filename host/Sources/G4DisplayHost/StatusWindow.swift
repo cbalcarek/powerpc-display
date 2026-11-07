@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // The status window: a list of PowerPC Macs (like Bluetooth in System
@@ -16,6 +17,7 @@ struct StatusView: View {
         let others = model.peers.filter { !$0.isActive }
         let selected = model.selected
 
+        ScrollView(.vertical) {
         VStack(alignment: .leading, spacing: 18) {
             BoxSection("My PowerPC Macs") {
                 if active.isEmpty {
@@ -111,6 +113,26 @@ struct StatusView: View {
         }
         .padding(20)
         .frame(width: 520)
+        .background(GeometryReader { g in Color.clear.preference(key: ContentHeight.self, value: g.size.height) })
+        }
+        // as tall as its content, but never taller than the screen (a 768- or
+        // 900-pixel PowerPC screen can be the main one): then it scrolls
+        .frame(width: 520, height: min(max(contentHeight, 200), maxHeight))
+        .onPreferenceChange(ContentHeight.self) { contentHeight = $0 }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            maxHeight = Self.screenRoom()
+        }
+        .onAppear { maxHeight = Self.screenRoom() }
+    }
+
+    @State private var contentHeight: CGFloat = 600
+    @State private var maxHeight: CGFloat = 800
+
+    /// Room for the window's content on the screen it's on (or the main one),
+    /// below the menu bar and above the Dock, minus its title bar.
+    static func screenRoom() -> CGFloat {
+        let screen = NSApp.windows.first { $0.isVisible && $0.title == "PowerPC Display" }?.screen ?? NSScreen.main
+        return max((screen?.visibleFrame.height ?? 800) - 60, 300)
     }
 
     @ViewBuilder
@@ -250,7 +272,7 @@ struct PeerDetail: View {
                         .labelsHidden()
                         .toggleStyle(.switch)
                 }
-                .help("One PowerPC Mac at a time plays the sound. This Mac keeps playing it too; turn its volume down if you only want it there.")
+                .help("One PowerPC Mac at a time plays the sound, and this Mac is silent meanwhile. macOS asks once for System Audio Recording permission.")
             }
 
             HStack(spacing: 8) {
@@ -294,6 +316,11 @@ struct PeerDetail: View {
 }
 
 // MARK: - building blocks (grouped boxes like System Settings)
+
+private struct ContentHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
 
 struct BoxSection<Content: View>: View {
     let title: String

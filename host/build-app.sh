@@ -101,6 +101,8 @@ $ICON_NAME_KEY
     <key>CFBundleVersion</key>            <string>13</string>
     <key>LSMinimumSystemVersion</key>     <string>14.0</string>
     <!-- macOS local-network privacy: required to find the G4 with Bonjour -->
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>PowerPC Display plays this Mac's sound on a PowerPC Mac, and mutes it here meanwhile.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>PowerPC Display finds and streams to your PowerPC Mac on the local network.</string>
     <key>NSBonjourServices</key>

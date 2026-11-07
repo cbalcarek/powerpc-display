@@ -29,6 +29,7 @@ extension Host {
 
     func endStreaming(_ sock: Int32) {
         if sentInputOn { injector.releaseAll() }      // let go of any key or button it held
+        if audioOn { stopSound() }                    // this Mac plays its sound again
         sentInputOn = false; audioOn = false
         pingTimer?.cancel()
         pingTimer = nil
