@@ -52,7 +52,12 @@ extension Host {
             let k = Int(p[off]), a = Int(p[off + 1])
             let b = Int(Int16(bitPattern: UInt16(be16(p, off + 2)))), c = Int(Int16(bitPattern: UInt16(be16(p, off + 4))))
             switch k {
-            case Int(G4_IN_MOUSE): events.append(.mouse(buttons: a, at: inputPoint(b, c)))
+            case Int(G4_IN_MOUSE):
+                if a != 0, !loggedFirstClick {
+                    loggedFirstClick = true
+                    log("first click from “\(peerName)” (buttons \(a)) at \(b),\(c); replaying it here")
+                }
+                events.append(.mouse(buttons: a, at: inputPoint(b, c)))
             case Int(G4_IN_KEY): events.append(.key(code: UInt16(a), down: p[off + 2] != 0))
             case Int(G4_IN_SCROLL): events.append(.scroll(dy: b, dx: c))
             default: break

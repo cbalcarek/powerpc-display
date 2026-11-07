@@ -9,6 +9,8 @@ final class PeerModel: ObservableObject, Identifiable {
     @Published var stats: Host.Stats?
     @Published var mirror: Bool
     @Published var sound: Bool
+    /// what the PowerPC Mac reports about itself (decode, GPU wait, upload)
+    @Published var peerStats: String?
     @Published var lastConnected: Date?
     var id: ObjectIdentifier { ObjectIdentifier(host) }
     var name: String? { host.macName }
@@ -208,11 +210,12 @@ final class AppController: NSObject, NSApplicationDelegate {
                 if peer.isConnected || nowConnected { peer.touchLastConnected() }   // connecting or just disconnected
                 if nowConnected { self?.askForInputAccessIfNeeded() }
                 peer.status = s
-                if !peer.isConnected { peer.stats = nil }
+                if !peer.isConnected { peer.stats = nil; peer.peerStats = nil }
                 self?.model.objectWillChange.send()
                 self?.menuBar?.updateIcon()
             }
             h.onStats = { [weak peer] s in peer?.stats = s }
+            h.onPeerStats = { [weak peer] t in peer?.peerStats = t }
             self.model.peers.append(peer)
             self.menuBar?.updateIcon()
         }

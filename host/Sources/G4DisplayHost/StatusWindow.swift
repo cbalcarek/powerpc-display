@@ -213,10 +213,16 @@ struct PeerDetail: View {
                             tile(s.videoQuality ?? "—", "video")
                         }
                     } else {
-                        Text("Idle — nothing on its screen is changing")
+                        Text("Idle: nothing on its screen is changing")
                             .font(.callout).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
                     }
+                }
+                if let t = peer.peerStats {
+                    Text("On the PowerPC Mac: " + t)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
                 Text(peer.detail)

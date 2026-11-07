@@ -719,6 +719,9 @@ static void open_log_file(void)
     if (g4c_input_active()) {
         NSEventType t = [e type];
         if (t == NSScrollWheel) { g4c_input_scroll([e deltaX], [e deltaY]); return; }
+        if (t == NSLeftMouseDown || t == NSLeftMouseUp) { g4c_input_button(0, t == NSLeftMouseDown); return; }
+        if (t == NSRightMouseDown || t == NSRightMouseUp) { g4c_input_button(1, t == NSRightMouseDown); return; }
+        if (t == NSOtherMouseDown || t == NSOtherMouseUp) { g4c_input_button(2, t == NSOtherMouseDown); return; }
         if (t == NSKeyDown || t == NSKeyUp || t == NSFlagsChanged) return;
     }
     [super sendEvent:e];

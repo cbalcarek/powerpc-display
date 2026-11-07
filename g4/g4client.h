@@ -38,6 +38,7 @@ void g4c_stats_text(char *buf, int n);        /* latest stats line ("Now: ..." o
    (Command-Q is for the other Mac). Main thread. */
 int  g4c_input_active(void);
 void g4c_input_scroll(float dx, float dy);    /* lines (+ = up / left), as NSEvent deltaX/Y */
+void g4c_input_button(int button, int down);  /* 0 left, 1 right, 2 middle */
 void g4c_set_status_hook(g4c_status_fn fn);   /* called from the server thread */
 void g4c_set_depth(int depth);                /* 16, 32, or 0 = automatic; applies to the next connection */
 int  g4c_auto_depth(void);                    /* what automatic would pick on this Mac right now */

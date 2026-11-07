@@ -64,6 +64,8 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     /// Called on the main thread.
     var onStatus: ((Status) -> Void)?
     var onStats: ((Stats) -> Void)?
+    /// the PowerPC Mac's own numbers (decode, GPU wait, upload), every 5 s (main thread)
+    var onPeerStats: ((String) -> Void)?
     /// a virtual display was just created (main thread)
     var onDisplayCreated: ((CGDirectDisplayID) -> Void)?
 
@@ -124,6 +126,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     // --- keyboard and mouse from the PowerPC Mac (connection thread) ---
     var inputKey: [UInt8]?                     // from pairing, this connection only
     var lastInputSeq: UInt32 = 0
+    var loggedFirstClick = false
     var inputMap = (display: CGDirectDisplayID(0), scale: CGFloat(1), offX: CGFloat(0), offY: CGFloat(0))
     let injector = InputInjector()
     let audioQ = DispatchQueue(label: "ppcdisplay.audio", qos: .userInteractive)
@@ -373,6 +376,7 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
             let did = displayID, sc = hintScale, ox = hintOffX, oy = hintOffY
             inputMap = (did, sc, ox, oy)
             lastInputSeq = 0
+            loggedFirstClick = false
             encQ.async { self.refreshInputOn() }
             DispatchQueue.main.async {
                 self.cursor.start(host: self, displayID: did, scale: sc, offsetX: ox, offsetY: oy)

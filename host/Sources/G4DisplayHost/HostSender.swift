@@ -228,7 +228,8 @@ extension Host {
         adaptVideo(windowMs: dt)
         if statVideo > 0 { snap.videoQuality = ["sharp", "smooth", "half"][effectiveVideoLevel] }
         DispatchQueue.main.async { self.onStats?(snap) }
-        if cfg.verbose {
+        // logged whenever it's sending (readable later with `log show`, for troubleshooting)
+        if cfg.verbose || statFrames > 0 {
             log(String(format: "%.1f fps  %.0f KB/s  (%.1fx)  frame→screen %.1f ms  waits %d  scroll copies %d  cache hits %d  palette rects %d  video rects %d  sharpened tiles %d  video %@",
                        snap.fps, snap.kbps, snap.compression, snap.latencyMs, statBlocked, statCopies, statHits, statPal, statYuv, statRefresh,
                        (snap.videoQuality ?? "none") as NSString))
@@ -261,6 +262,10 @@ extension Host {
                 encQ.async { self.sendUpdate() }
             } else if type == Int(G4_MSG_INPUT) {
                 handleInput(payload, len)
+            } else if type == Int(G4_MSG_STATS), len > 0, len <= 400 {
+                let text = String(decoding: payload[0..<len], as: UTF8.self)
+                log("“\(peerName)” says: \(text)")
+                DispatchQueue.main.async { self.onPeerStats?(text) }
             }
         }
     }

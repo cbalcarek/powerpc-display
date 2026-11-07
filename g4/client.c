@@ -1132,8 +1132,19 @@ static int authenticate(int fd, const uint8_t *nc, const uint8_t *cpub, const ui
 static pthread_mutex_t scroll_lock = PTHREAD_MUTEX_INITIALIZER;
 static float scroll_dx, scroll_dy;
 static volatile int input_active_flag = 0;
+static volatile int event_buttons = 0;      /* from the app's mouse-down/up events */
 
 int  g4c_input_active(void) { return input_active_flag; }
+/* buttons as the app sees them in its events (bit 0 left, 1 right, 2 middle):
+   polling the hardware state isn't reliable on every Mac, so both count */
+void g4c_input_button(int button, int down)
+{
+    int bit = button == 0 ? 1 : button == 1 ? 2 : 4;
+    pthread_mutex_lock(&scroll_lock);
+    if (down) event_buttons |= bit; else event_buttons &= ~bit;
+    pthread_mutex_unlock(&scroll_lock);
+}
+
 void g4c_input_scroll(float dx, float dy)
 {
     pthread_mutex_lock(&scroll_lock);
@@ -1174,6 +1185,16 @@ static void read_pointer(session *s, int *x, int *y, int *buttons)
     *buttons = (CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonLeft) ? 1 : 0)
              | (CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonRight) ? 2 : 0)
              | (CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonCenter) ? 4 : 0);
+    {
+        static int told = 0;
+        int ev = event_buttons;
+        if (!told && (*buttons || ev)) {   /* which way clicks are seen here (for the log) */
+            told = 1;
+            fprintf(stderr, "first click: polling sees %s, app events see %s\n",
+                    *buttons ? "it" : "nothing", ev ? "it" : "nothing");
+        }
+        *buttons |= ev;
+    }
 }
 
 static void *input_thread(void *arg)
@@ -1206,6 +1227,7 @@ static void *input_thread(void *arg)
             memcpy(prev, cur, 16);
             px = x; py = y; pb = b;
             active = 1;
+            event_buttons = 0;
             pthread_mutex_lock(&scroll_lock); scroll_dx = scroll_dy = 0; pthread_mutex_unlock(&scroll_lock);
             input_active_flag = 1;
         }
@@ -1632,7 +1654,7 @@ static void run_session(int fd)
                 UpdateSystemActivity(UsrActivity);
             }
 
-            if ((opt_verbose || opt_test) && now_ms() - s.stat_t0 > 5000) {
+            if (now_ms() - s.stat_t0 > 5000) {
                 double secs = (now_ms() - s.stat_t0) / 1000.0;
                 char line[300];
                 s.tot_secs += secs; s.tot_frames += s.stat_frames; s.tot_draws += s.stat_draws;
@@ -1641,13 +1663,16 @@ static void run_session(int fd)
                 s.tot_flush_ms += s.stat_flush_ms; s.tot_upload_kb += s.stat_upload_kb;
                 stats_line(line, sizeof line, secs, s.stat_frames, s.stat_draws, s.stat_bytes,
                            s.stat_decode_ms, s.stat_wait_ms, s.stat_upload_ms, s.stat_upload_kb, s.stat_flush_ms);
-                fprintf(stderr, "%s\n", line);
+                if (opt_verbose || opt_test) fprintf(stderr, "%s\n", line);
                 set_stats_text("Now: ", line);
-                s.stat_t0 = now_ms(); s.stat_frames = s.stat_draws = 0;
-                s.stat_bytes = s.stat_decode_ms = 0;
-                s.stat_wait_ms = s.stat_upload_ms = s.stat_flush_ms = s.stat_upload_kb = 0;
-            } else if (!(opt_verbose || opt_test) && now_ms() - s.stat_t0 > 5000) {
-                /* stats off: keep the counters from growing without limit */
+                if (s.stat_frames > 0) {
+                    /* also to the other Mac, so it can show and log how we're doing */
+                    uint8_t m[G4_HDR_SIZE + 300];
+                    size_t ln = strlen(line);
+                    g4_put_header(m, G4_MSG_STATS, (uint32_t)ln);
+                    memcpy(m + G4_HDR_SIZE, line, ln);
+                    write_full(s.fd, m, G4_HDR_SIZE + ln);
+                }
                 s.stat_t0 = now_ms(); s.stat_frames = s.stat_draws = 0;
                 s.stat_bytes = s.stat_decode_ms = 0;
                 s.stat_wait_ms = s.stat_upload_ms = s.stat_flush_ms = s.stat_upload_kb = 0;

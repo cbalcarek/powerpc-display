@@ -54,7 +54,9 @@ enum {
                                  then a 16-byte MAC (g4_input_mac) over all before it */
     G4_MSG_INPUT_ON     = 18, /* host -> client: u8 1 = send me your keyboard and mouse
                                  while you show my screen, 0 = stop */
-    G4_MSG_AUDIO        = 19  /* host -> client: a packet of sound (G4_AUDIO_*) */
+    G4_MSG_AUDIO        = 19, /* host -> client: a packet of sound (G4_AUDIO_*) */
+    G4_MSG_STATS        = 20  /* client -> host: its performance, ASCII, every 5 s
+                                 while showing (decode, GPU wait, upload ms...) */
 };
 
 /* G4_MSG_INPUT events, 8 bytes: kind, then fields (big-endian, rest zero).
