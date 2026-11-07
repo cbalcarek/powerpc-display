@@ -134,3 +134,22 @@ then Connect from the M1 (the offer is made on connect, and rechecked every
 - Tiger's gcc 4.0 limits: C89-style declarations at the top of blocks, no
   `__sync` builtins (use `OSMemoryBarrier`), and it can run out of memory on
   big AltiVec files (that's why AltiVec lives in `g4yuv_altivec.c`).
+
+## Troubleshooting a live session
+
+Ask Colin to run this on the M1 after reproducing the problem. It saves the
+Mac app's log into the project folder, where it can be read through the
+device bridge (`~/mnt/g4display/m1-log.txt`):
+
+```
+log show --predicate 'subsystem == "local.ppcdisplay.host"' --last 15m > ~/Downloads/g4display/m1-log.txt
+```
+
+While it's sending, the log has:
+- the Mac's stats every ~2 s (fps, KB/s, frame→screen, scroll copies…)
+- the PowerPC Mac's own stats every 5 s (`"admin's iMac" says: … decode …
+  GPU wait … upload …`, PowerPC app 0.13+)
+- `first click from …` when PowerPC input clicks arrive
+
+The PowerPC Mac's log (Performance › Open Log) also says how it saw the
+first click: `first click: polling sees …, app events see …`.
