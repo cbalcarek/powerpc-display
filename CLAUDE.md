@@ -113,12 +113,16 @@ then Connect from the M1 (the offer is made on connect, and rechecked every
 - Never attach both `-M1` and `-Mac`: 0.12's updater would prefer `-M1`.
 - Versions are set in `host/build-app.sh` and
   `g4/Build PowerPC Display.command` (CFBundleShortVersionString and
-  CFBundleVersion). 0.11 shipped; check GitHub for 0.12; 0.13 is built,
-  not released. Bump both files for the next release.
+  CFBundleVersion). Published so far: up to v0.13 (check `gh api
+  repos/cbalcarek/powerpc-display/releases`); 0.14 is next. Bump both files
+  for every release: the updater only offers a newer version.
+- The updater counts pre-releases too (only drafts are skipped), so marking
+  one pre-release doesn't keep it from installed copies.
+- `gh` here has no working token, so Colin publishes releases himself from
+  the prefilled link.
 - Give release notes plus a prefilled
   `https://github.com/cbalcarek/powerpc-display/releases/new?tag=…&title=…&body=…`
-  link. Suggest **pre-release** until he has tested on hardware: installed
-  copies offer any published release to themselves.
+  link.
 
 ## Checking work here (Linux cloud session)
 
