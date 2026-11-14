@@ -94,7 +94,7 @@ struct StatusView: View {
                 SwitchRow("Match this Mac's brightness",
                           isOn: Binding(get: { model.matchBrightness }, set: { controller.setMatchBrightness($0) }))
                     .help("PowerPC Macs with a built-in screen (iMac, iBook, PowerBook) follow this Mac's brightness while they show it, and go back to their own afterwards.")
-                if controller.isBundled {
+                if controller.canLaunchAtLogin {
                     BoxDivider()
                     SwitchRow("Launch at login",
                               isOn: Binding(get: { model.launchAtLogin }, set: { controller.setLaunchAtLogin($0) }))
@@ -265,6 +265,7 @@ struct PeerDetail: View {
                     .fixedSize()
                     .disabled(headless)
                 }
+                if Host.canPlaySound {
                 HStack {
                     Text("Play this Mac's sound on it")
                     Spacer()
@@ -273,6 +274,7 @@ struct PeerDetail: View {
                         .toggleStyle(.switch)
                 }
                 .help("One PowerPC Mac at a time plays the sound, and this Mac is silent meanwhile. macOS asks once for System Audio Recording permission.")
+                }
             }
 
             HStack(spacing: 8) {

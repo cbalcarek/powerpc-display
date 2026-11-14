@@ -81,13 +81,15 @@ network; confirmed 2026-11-03; `192.168.64.1` doesn't work for this VM).
 
 Double-click **Build Mac App.command**. It builds arm64 and x86_64
 separately (`host/build-app.sh`, each in `.build/<arch>` with an explicit
-`<arch>-apple-macosx14.0` triple), joins them with lipo, signs with the
+`<arch>-apple-macosx12.3` triple), joins them with lipo, signs with the
 local certificate, installs to /Applications, and writes
 `releases/PowerPC-Display-Mac.zip`.
 
 - Success looks like:
   - `Built for: x86_64 arm64`
-  - `Runs on macOS 14.0 and later.`
+  - `Runs on macOS 12.3 and later.` (lowered from 14 on 2026-11-14 for
+    Colin's 2013 Mac Pro on Monterey: sound needs 13, muting it on the Mac
+    needs 14.2, Launch at login needs 13; all checked with `#available`)
 - **After any Xcode update** the first build stops at the licence:
   `Agreeing to the Xcode and Apple SDKs license requires admin privileges`.
   Fix: `sudo xcodebuild -license accept` in Terminal, then build again.

@@ -82,7 +82,7 @@ extension Host {
         var scale: CGFloat = 1, offX: CGFloat = 0, offY: CGFloat = 0
         if mirroring {
             sc.scalesToFit = true
-            sc.preservesAspectRatio = true
+            if #available(macOS 14, *) { sc.preservesAspectRatio = true }   // (the default before 14)
             // letterbox bars are black by default. (Don't set backgroundColor:
             // SCStreamConfiguration doesn't retain it, so a temporary CGColor
             // is freed and the stream crashes copying it.)
@@ -103,7 +103,7 @@ extension Host {
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let s = SCStream(filter: filter, configuration: sc, delegate: self)
         try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: encQ)
-        if canAudio { try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQ) }
+        if #available(macOS 13, *), canAudio { try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQ) }
         try await s.startCapture()
         storeStream(s, sc)
         encQ.async {
@@ -115,7 +115,7 @@ extension Host {
     // MARK: - frames (encQ)
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sb: CMSampleBuffer, of type: SCStreamOutputType) {
-        if type == .audio { handleAudio(sb); return }       // on audioQ
+        if #available(macOS 13, *), type == .audio { handleAudio(sb); return }       // on audioQ
         guard type == .screen, let enc else { return }
         guard let arr = CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
               let att = arr.first,

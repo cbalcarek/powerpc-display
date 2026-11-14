@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 # "swift build --arch arm64 --arch x86_64" needs the full Xcode; this works
 # with just the Command Line Tools too.)
 ARCHS="${ARCHS:-arm64 x86_64}"
-MINOS=14.0              # oldest macOS it runs on (also LSMinimumSystemVersion below)
+MINOS=12.3              # oldest macOS it runs on (ScreenCaptureKit); also LSMinimumSystemVersion below
 OUT="$(mktemp -d)"
 SLICES=""
 for A in $ARCHS; do
@@ -64,7 +64,7 @@ if [ -d ../icon/AppIcon.icon ]; then
         [ -n "$DEV" ] && [ ! -d "$DEV" ] && continue
         TMPI="$(mktemp -d)"
         if DEVELOPER_DIR="${DEV:-$(xcode-select -p 2>/dev/null)}" xcrun actool ../icon/AppIcon.icon \
-               --compile "$TMPI" --platform macosx --minimum-deployment-target 14.0 \
+               --compile "$TMPI" --platform macosx --minimum-deployment-target "$MINOS" \
                --app-icon AppIcon --output-partial-info-plist "$TMPI/partial.plist" \
                --output-format human-readable-text >"$TMPI/log.txt" 2>&1 \
            && [ -f "$TMPI/Assets.car" ]; then
@@ -99,7 +99,7 @@ $ICON_NAME_KEY
     <key>CFBundlePackageType</key>        <string>APPL</string>
     <key>CFBundleShortVersionString</key> <string>0.13</string>
     <key>CFBundleVersion</key>            <string>13</string>
-    <key>LSMinimumSystemVersion</key>     <string>14.0</string>
+    <key>LSMinimumSystemVersion</key>     <string>12.3</string>
     <!-- macOS local-network privacy: required to find the G4 with Bonjour -->
     <key>NSAudioCaptureUsageDescription</key>
     <string>PowerPC Display plays this Mac's sound on a PowerPC Mac, and mutes it here meanwhile.</string>

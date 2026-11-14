@@ -2,7 +2,7 @@
 
 (Formerly "G4 Display". The project folder is still called `g4display`.)
 
-The modern Mac can be Apple Silicon or Intel, with macOS 14 or later: the
+The modern Mac can be Apple Silicon or Intel, with macOS 12.3 or later: the
 Mac app is Universal. This README says "Apple Silicon Mac" for it either way.
 
 The Apple Silicon Mac creates a virtual monitor the same size as the PowerPC
@@ -137,7 +137,13 @@ on) with extra options for debugging: `-v` (stats), `-16` / `-32`, `-c N`
 `~/Desktop/ppcdisplay-test.png`). It prints the chip and automatic choices
 when it starts.
 
-## 3. The Apple Silicon (or Intel) Mac (macOS 14+)
+## 3. The Apple Silicon (or Intel) Mac (macOS 12.3+)
+
+Everything works from macOS 12.3 (Monterey) on, except:
+- **Sound on the PowerPC Mac** needs macOS 13; playing it *only* there
+  (muted on this Mac) needs 14.2. On 12 the sound switch is hidden.
+- **Launch at login** needs macOS 13; on 12, add PowerPC Display in System
+  Preferences › Users & Groups › Login Items.
 
 Double-click **Build Mac App.command** (in the `g4display` folder). It builds
 PowerPC Display.app, installs it in /Applications, removes the old G4 Display

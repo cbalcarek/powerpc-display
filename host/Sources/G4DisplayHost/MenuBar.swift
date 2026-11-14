@@ -118,7 +118,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             mir.state = peer.mirror ? .on : .off
             sub.addItem(mir)
         }
-        if !peer.isPairing {
+        if !peer.isPairing, Host.canPlaySound {
             let snd = peerAction("Play Sound Here", #selector(toggleSound(_:)), peer)
             snd.state = peer.sound ? .on : .off
             sub.addItem(snd)

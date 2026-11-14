@@ -18,6 +18,13 @@ extension Host {
 
     var soundOn: Bool { lock.lock(); defer { lock.unlock() }; return _sound }
 
+    /// Capturing this Mac's sound needs macOS 13 (ScreenCaptureKit audio);
+    /// muting it here while it plays on the PowerPC Mac needs 14.2.
+    static var canPlaySound: Bool {
+        if #available(macOS 13, *) { return true }
+        return false
+    }
+
     func setSound(_ on: Bool) {
         lock.lock(); _sound = on; lock.unlock()
         encQ.async { self.refreshAudioOn() }
@@ -25,7 +32,7 @@ extension Host {
 
     /// encQ: start or stop capturing sound for it (setting changed, or a new connection).
     func refreshAudioOn() {
-        let want = fd >= 0 && clientAudio && soundOn
+        let want = fd >= 0 && clientAudio && soundOn && Self.canPlaySound
         guard want != audioOn else { return }
         lock.lock(); let s = _stream, conf = _scConfig; lock.unlock()
         guard let s, let conf else { return }
@@ -53,16 +60,18 @@ extension Host {
         if #available(macOS 14.2, *), let tap = audioTap as? SystemAudioTap { tap.stop() }
         audioTap = nil
         lock.lock(); let s = _stream, conf = _scConfig; lock.unlock()
-        if let s, let conf, conf.capturesAudio { setCaptureAudio(false, s, conf) }
+        if #available(macOS 13, *), let s, let conf, conf.capturesAudio { setCaptureAudio(false, s, conf) }
     }
 
     private func setCaptureAudio(_ on: Bool, _ s: SCStream, _ conf: SCStreamConfiguration) {
+        guard #available(macOS 13, *) else { return }
         conf.capturesAudio = on
         Task { try? await s.updateConfiguration(conf) }
     }
 
     /// Sound settings for a new capture (encQ state read by the caller).
     func configureAudio(_ sc: SCStreamConfiguration, on: Bool) {
+        guard #available(macOS 13, *) else { return }
         sc.capturesAudio = on
         sc.sampleRate = Self.audioRate
         sc.channelCount = 2

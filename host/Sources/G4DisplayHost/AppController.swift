@@ -171,6 +171,12 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     var isBundled: Bool { Bundle.main.bundleIdentifier != nil }
+    /// Launch at login needs macOS 13 (SMAppService); on 12, add it in System
+    /// Preferences › Users & Groups › Login Items.
+    var canLaunchAtLogin: Bool {
+        if #available(macOS 13, *) { return isBundled }
+        return false
+    }
 
     init(hosts: HostGroup) {
         self.hosts = hosts
@@ -196,7 +202,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMainMenu()
-        if isBundled { model.launchAtLogin = SMAppService.mainApp.status == .enabled }
+        if #available(macOS 13, *), isBundled { model.launchAtLogin = SMAppService.mainApp.status == .enabled }
 
         let mb = MenuBarController(controller: self)
         menuBar = mb
@@ -272,7 +278,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             w.title = "PowerPC Display"
             w.isReleasedWhenClosed = false
             let hc = NSHostingController(rootView: StatusView(model: model, controller: self))
-            hc.sizingOptions = [.preferredContentSize]     // the window grows with the list of Macs
+            // the window grows with the list of Macs (macOS 12 does this by itself)
+            if #available(macOS 13, *) { hc.sizingOptions = [.preferredContentSize] }
             w.contentViewController = hc
             w.center()
             w.setFrameAutosaveName("PowerPCDisplayWindow3")
@@ -399,7 +406,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     func setLaunchAtLogin(_ on: Bool) {
-        guard isBundled else { return }
+        guard #available(macOS 13, *), isBundled else { return }
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {

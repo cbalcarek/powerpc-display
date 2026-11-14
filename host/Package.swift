@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "PowerPCDisplayHost",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("12.3")],   // ScreenCaptureKit; newer features check at run time
     targets: [
         // shared with the PowerPC client (g4/ compiles the same file)
         .target(name: "CCodec", path: "Sources/CCodec"),
