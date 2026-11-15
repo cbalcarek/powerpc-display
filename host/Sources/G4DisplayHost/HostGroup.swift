@@ -77,7 +77,32 @@ final class HostGroup {
                     }
                 }
             }
+            // Mac OS 9 receivers can't announce themselves: ask by broadcast
+            var cbuf = [CChar](repeating: 0, count: 4096)
+            if g4_probe_classic(800, &cbuf, Int32(cbuf.count)) > 0 {
+                let bytes = cbuf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+                let lines = bytes.split(separator: UInt8(ascii: "\n"))
+                for line in lines {
+                    let f = line.split(separator: UInt8(ascii: "\t"), omittingEmptySubsequences: false)
+                    guard f.count == 3, let name = String(bytes: f[0], encoding: .macOSRoman), !name.isEmpty,
+                          let ip = String(bytes: f[1], encoding: .ascii),
+                          let port = UInt16(String(decoding: f[2], as: UTF8.self)) else { continue }
+                    DispatchQueue.main.async { self.foundClassic(name: name, ip: ip, port: port) }
+                }
+            }
             sleep(3)
+        }
+    }
+
+    /// A Mac OS 9 receiver answered: remember where it is (that's how its
+    /// Host connects, with no Bonjour), and serve it if it's new.
+    private func foundClassic(name: String, ip: String, port: UInt16) {
+        if let h = hosts.first(where: { $0.macName == name }) {
+            h.noteAddress(ip, port, name)
+        } else {
+            UserDefaults.standard.set(["host": ip, "port": Int(port), "name": name], forKey: "lastEndpoint.\(name)")
+            log("found “\(name)” (Mac OS 9) at \(ip)")
+            add(name: name)
         }
     }
 

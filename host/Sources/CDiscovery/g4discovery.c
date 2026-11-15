@@ -304,3 +304,70 @@ int g4_wake_on_lan(const uint8_t mac[6])
     freeifaddrs(ifs);
     return sent;
 }
+
+/* ------------------------------------------------------------------ */
+/* Mac OS 9 receivers: no Bonjour there, so ask by UDP broadcast        */
+
+int g4_probe_classic(int timeout_ms, char *buf, int bufsize)
+{
+    int s = socket(AF_INET, SOCK_DGRAM, 0), one = 1, found = 0, used = 0;
+    struct sockaddr_in to;
+    struct ifaddrs *ifs = NULL, *i;
+    char seen[16][64];
+    long long deadline;
+    if (bufsize < 1) return -1;
+    buf[0] = 0;
+    if (s < 0) return -1;
+    setsockopt(s, SOL_SOCKET, SO_BROADCAST, &one, sizeof one);
+
+    memset(&to, 0, sizeof to);
+    to.sin_family = AF_INET;
+    to.sin_port = htons(5960);
+    to.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+    sendto(s, "PPCD?", 5, 0, (struct sockaddr *)&to, sizeof to);
+    /* and each interface's own broadcast address (255.255.255.255 only
+       leaves by one of them; a direct cable is often 169.254.x.x) */
+    if (getifaddrs(&ifs) == 0) {
+        for (i = ifs; i; i = i->ifa_next) {
+            if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET || !(i->ifa_flags & IFF_UP) ||
+                (i->ifa_flags & IFF_LOOPBACK) || !(i->ifa_flags & IFF_BROADCAST) || !i->ifa_broadaddr) continue;
+            to.sin_addr = ((struct sockaddr_in *)i->ifa_broadaddr)->sin_addr;
+            sendto(s, "PPCD?", 5, 0, (struct sockaddr *)&to, sizeof to);
+        }
+        freeifaddrs(ifs);
+    }
+
+    deadline = now_ms() + timeout_ms;
+    while (now_ms() < deadline) {
+        fd_set rf;
+        struct timeval tv;
+        long long left = deadline - now_ms();
+        unsigned char m[300];
+        struct sockaddr_in from;
+        socklen_t fl = sizeof from;
+        ssize_t n;
+        char ip[64], name[260], line[400];
+        int k, dup = 0;
+        FD_ZERO(&rf); FD_SET(s, &rf);
+        tv.tv_sec = (time_t)(left / 1000); tv.tv_usec = (suseconds_t)((left % 1000) * 1000);
+        if (select(s + 1, &rf, NULL, NULL, &tv) <= 0) break;
+        n = recvfrom(s, m, sizeof m, 0, (struct sockaddr *)&from, &fl);
+        if (n < 7 || memcmp(m, "PPCD!", 5)) continue;
+        inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
+        for (k = 0; k < found && k < 16; k++) if (!strcmp(seen[k], ip)) dup = 1;
+        if (dup) continue;
+        if (found < 16) snprintf(seen[found], sizeof seen[found], "%s", ip);
+        found++;
+        {
+            int nl = (int)n - 7, j;
+            if (nl > 255) nl = 255;
+            memcpy(name, m + 7, (size_t)nl);
+            name[nl] = 0;
+            for (j = 0; j < nl; j++) if (name[j] == '\t' || name[j] == '\n' || name[j] == 0) name[j] = ' ';
+        }
+        snprintf(line, sizeof line, "%s\t%s\t%u\n", name, ip, (unsigned)((m[5] << 8) | m[6]));
+        if (used + (int)strlen(line) < bufsize) { strcpy(buf + used, line); used += (int)strlen(line); }
+    }
+    close(s);
+    return found;
+}

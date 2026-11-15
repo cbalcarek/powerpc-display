@@ -33,10 +33,24 @@ extension Host {
         return n
     }
 
+    /// Main thread: discovery saw it at this address (Mac OS 9 receivers,
+    /// which have no Bonjour). Used from the next connection attempt.
+    func noteAddress(_ host: String, _ port: UInt16, _ name: String) {
+        let saved = UserDefaults.standard.dictionary(forKey: endpointKey)
+        guard saved?["host"] as? String != host || saved?["port"] as? Int != Int(port) else { return }
+        lock.lock()
+        _pendingEndpoint = (host, port, name)
+        lock.unlock()
+        UserDefaults.standard.set(["host": host, "port": Int(port), "name": name], forKey: endpointKey)
+    }
+
     /// Connect by address, or find the PowerPC Mac: its last address first,
     /// then Bonjour. Who is on the other end is checked by the pairing
     /// handshake afterwards, so connecting to the wrong machine is harmless.
     func connectToG4(announced: inout Bool) -> (Int32, String)? {
+        lock.lock()
+        if let p = _pendingEndpoint { lastEndpoint = p; _pendingEndpoint = nil; endpointSkipUntil = 0 }
+        lock.unlock()
         if let addr = cfg.g4Address {
             if let s = connectTCP(host: addr, port: cfg.port) { return (s, addr) }
             if !announced { log("waiting for the PowerPC Mac at \(addr):\(cfg.port)…"); announced = true }

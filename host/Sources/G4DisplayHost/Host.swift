@@ -144,6 +144,9 @@ final class Host: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendabl
     /// where the PowerPC Mac was last reached (also across launches): tried
     /// first, before asking Bonjour
     var lastEndpoint: (host: String, port: UInt16, name: String)?
+    /// a newer address from discovery (Mac OS 9 receivers), taken up by the
+    /// connection thread (under lock)
+    var _pendingEndpoint: (host: String, port: UInt16, name: String)?
     /// after a bad handshake there (e.g. UTM's port forward with nothing
     /// behind it), leave the remembered address alone for a while
     var endpointSkipUntil: Double = 0

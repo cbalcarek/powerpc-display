@@ -46,6 +46,14 @@ int g4_browse_names(int timeout_ms, char *buf, int bufsize);
  */
 int g4_wake_on_lan(const uint8_t mac[6]);
 
+/*
+ * Mac OS 9 receivers (os9/) can't announce themselves with Bonjour: ask
+ * "PPCD?" by UDP broadcast on port 5960 and collect the answers ("PPCD!",
+ * u16 TCP port, computer name in Mac Roman). buf gets one line per Mac:
+ * "name\tip\tport\n". Returns how many answered, -1 on error.
+ */
+int g4_probe_classic(int timeout_ms, char *buf, int bufsize);
+
 #ifdef __cplusplus
 }
 #endif

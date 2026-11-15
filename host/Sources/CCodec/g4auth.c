@@ -2,10 +2,12 @@
 #include "g4auth.h"
 #include "g4nacl.h"
 
-#include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+
+#ifndef G4_RANDOM_EXTERNAL   /* Mac OS 9 has no /dev/urandom: its app supplies g4_random */
+#include <fcntl.h>
 #include <unistd.h>
 
 int g4_random(uint8_t *buf, size_t n)
@@ -21,6 +23,7 @@ int g4_random(uint8_t *buf, size_t n)
     close(fd);
     return 0;
 }
+#endif
 
 void randombytes(unsigned char *x, unsigned long long n)
 {
