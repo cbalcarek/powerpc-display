@@ -17,3 +17,4 @@ g4/*.zip
 # Apple's Xcode installer (link to a local file; not redistributable)
 xcode.dmg
 .DS_Store
+os9/build/

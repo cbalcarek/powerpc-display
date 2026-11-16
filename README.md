@@ -137,6 +137,38 @@ on) with extra options for debugging: `-v` (stats), `-16` / `-32`, `-c N`
 `~/Desktop/ppcdisplay-test.png`). It prints the chip and automatic choices
 when it starts.
 
+## 2b. Mac OS 9 (any PowerPC Mac with Mac OS 8.6 to 9.2.2)
+
+A separate, smaller receiver for Macs that can't run Tiger: a Twentieth
+Anniversary Mac, a beige G3, a PowerBook 3400, a 9600, or a G4 kept on OS 9.
+It's built in the cloud with Retro68 (`os9/`), so there's nothing to compile
+on the old Mac.
+
+**Install:** copy **PowerPC-Display-OS9.bin** from `releases/` to the old
+Mac and double-click it (StuffIt Expander, which comes with Mac OS 8.6 and 9,
+turns it into the app). Easiest way to copy it: double-click **Share with
+PowerPC Mac.command** on your Mac, then on the old Mac open the
+`http://…:8000/releases/PowerPC-Display-OS9.bin` address that window prints
+in Internet Explorer or Netscape. In an emulator (SheepShaver, QEMU) use
+**PowerPC-Display-OS9.dsk** instead: it's a disk image with the app on it.
+
+**Use:** open PowerPC Display on the old Mac. It needs TCP/IP set up (Control
+Panels › TCP/IP, on the same network as your Mac) and about 10 MB of memory
+(24 MB lets it keep a bigger tile cache). Your Mac finds it within a few
+seconds; pair once with the code, as on Tiger. While connected it takes over
+the whole screen; **Command-Escape** gives the screen back.
+
+What's the same as on Tiger: picture, pointer, the old Mac's keyboard and
+mouse, sound, pairing. What's different:
+
+- Your Mac finds it by asking on the network (Mac OS 9 has no Bonjour), so it
+  needs the Mac app 0.14 or later, and both Macs on the same subnet.
+- Colour: Thousands or Millions. A screen set to 256 colours is switched to
+  Thousands while connected and put back afterwards.
+- No automatic updates from your Mac: copy a new `.bin` over to update.
+- No AltiVec and no sleep handling; it draws straight to the screen, so older
+  machines show fewer frames per second when a lot changes.
+
 ## 3. The Apple Silicon (or Intel) Mac (macOS 12.3+)
 
 Everything works from macOS 12.3 (Monterey) on, except:
@@ -534,6 +566,8 @@ host/Sources/CCodec/g4nacl.c   TweetNaCl (public domain), vendored; RFC test vec
 host/build-app.sh         builds PowerPC Display.app (Apple Silicon side)
 g4/client.c               PowerPC side: CGL full screen, texture fast path, framebuffer fallback
 g4/app.m                  PowerPC side: the Tiger app window
+os9/rx_core.c             Mac OS 9 receiver, system-independent part (tested on Linux: os9/test/run.sh)
+os9/mac9.c                Mac OS 9 receiver: MacTCP, screen, keyboard/mouse, Sound Manager, window
 icon/make_icon.py         draws the app icon (modern and Tiger .icns)
 test/                     round-trip + fuzz tests (`make -C test`)
 ```

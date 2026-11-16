@@ -11,6 +11,12 @@ echo "On the PowerPC Mac (G3, G4 or G5), in Terminal:"
 [ -e xcode.dmg ] && echo "  Xcode installer:  curl -O http://$NAME:8000/xcode.dmg && open xcode.dmg"
 echo "  PowerPC Display:  mkdir -p ~/g4display/g4 && cd ~/g4display/g4 && curl -O http://$NAME:8000/g4/update.sh && sh update.sh $NAME"
 echo "  Later updates:    sh ~/g4display/g4/update.sh $NAME"
+IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)"
+if [ -n "$IP" ] && [ -e releases/PowerPC-Display-OS9.bin ]; then
+  echo
+  echo "On a Mac OS 9 Mac, in a web browser (OS 9 can't use the .local name):"
+  echo "  http://$IP:8000/releases/PowerPC-Display-OS9.bin"
+fi
 echo
 exec python3 - <<'PY'
 import http.server, os, re

@@ -9,25 +9,11 @@
  * Built with Retro68 (PowerPC, classic Toolbox). Any PowerPC Mac on Mac OS
  * 8.6-9.2.2, at thousands or millions of colours.
  */
-#include <Quickdraw.h>
-#include <Windows.h>
-#include <Menus.h>
-#include <Fonts.h>
-#include <TextEdit.h>
-#include <Dialogs.h>
-#include <Controls.h>
-#include <Events.h>
-#include <ToolUtils.h>
-#include <Resources.h>
-#include <Devices.h>
-#include <Files.h>
-#include <Folders.h>
-#include <Sound.h>
-#include <Timer.h>
-#include <LowMem.h>
-#include <Processes.h>
-#include <AppleEvents.h>
-#include <MacTCP.h>
+#include <Multiverse.h>     /* Retro68's Multiversal interfaces: the whole Toolbox */
+
+/* the microsecond timer (InterfaceLib has it; the headers don't) */
+typedef struct { UInt32 hi, lo; } UnsignedWide;
+extern pascal void Microseconds(UnsignedWide *us);
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -439,8 +425,8 @@ void plat_screen_release(void)
     ShowCursor();
     DrawMenuBar();
     /* repaint the desktop and every window */
-    PaintBehind((WindowPtr)LMGetWindowList(), GetGrayRgn());
-    CalcVisBehind((WindowPtr)LMGetWindowList(), GetGrayRgn());
+    PaintBehind((WindowPeek)LMGetWindowList(), GetGrayRgn());
+    CalcVisBehind((WindowPeek)LMGetWindowList(), GetGrayRgn());
 }
 
 /* ------------------------------------------------------------------ */
@@ -449,7 +435,7 @@ void plat_screen_release(void)
 void plat_input(int *x, int *y, int *buttons, unsigned char keys[16])
 {
     Point pt;
-    KeyMap km;
+    uint8_t km[16];
     GrafPtr old;
     GetPort(&old);
     if (cover) SetPort((GrafPtr)cover);                 /* its origin is the screen's */
@@ -492,7 +478,7 @@ static int snd_open(void)
     fifo = (int16_t *)NewPtr(FIFO_FRAMES * 4);
     snd_cb_upp = NewSndCallbackUPP(snd_done);
     if (!bufs || !fifo || !snd_cb_upp) return 0;
-    if (SndNewChannel(&chan, sampledSynth, initStereo, snd_cb_upp) != noErr) { chan = NULL; return 0; }
+    if (SndNewChannel(&chan, sampledSynth, 0x00C0 /* initStereo */, snd_cb_upp) != noErr) { chan = NULL; return 0; }
     snd_ok = 1;
     return 1;
 }
@@ -567,9 +553,9 @@ void plat_sound_stop(void)
 static int prefs_spec(FSSpec *spec)
 {
     short vref;
-    long dir;
+    int32_t dir;
     OSErr e;
-    if (FindFolder(kOnSystemDisk, kPreferencesFolderType, kCreateFolder, &vref, &dir) != noErr) return -1;
+    if (FindFolder((int16_t)0x8000 /* kOnSystemDisk */, kPreferencesFolderType, true /* create */, &vref, &dir) != noErr) return -1;
     e = FSMakeFSSpec(vref, dir, "\pPowerPC Display Prefs", spec);
     return (e == noErr || e == fnfErr) ? 0 : -1;
 }
@@ -578,7 +564,7 @@ size_t plat_prefs_load(char *buf, size_t cap)
 {
     FSSpec spec;
     short ref;
-    long n = (long)cap;
+    int32_t n = (int32_t)cap;
     if (prefs_spec(&spec) || FSpOpenDF(&spec, fsRdPerm, &ref) != noErr) return 0;
     if (FSRead(ref, &n, buf) != noErr && n <= 0) n = 0;
     FSClose(ref);
@@ -589,9 +575,9 @@ void plat_prefs_save(const char *buf, size_t n)
 {
     FSSpec spec;
     short ref;
-    long len = (long)n;
+    int32_t len = (int32_t)n;
     if (prefs_spec(&spec)) return;
-    FSpCreate(&spec, 'PPCD', 'pref', smSystemScript);   /* already there: fine */
+    FSpCreate(&spec, 'PPDs', 'pref', smSystemScript);   /* already there: fine */
     if (FSpOpenDF(&spec, fsRdWrPerm, &ref) != noErr) return;
     SetEOF(ref, 0);
     FSWrite(ref, &len, buf);

@@ -124,6 +124,28 @@ then Connect from the M1 (the offer is made on connect, and rechecked every
   `https://github.com/cbalcarek/powerpc-display/releases/new?tag=…&title=…&body=…`
   link.
 
+## Mac OS 9 receiver (`os9/`, built here in the cloud, not on Colin's Macs)
+
+- Toolchain: Retro68 PowerPC with Multiversal interfaces, at
+  `/home/claude/Retro68-build/toolchain` (takes ~1.5 h to build on 2 cores:
+  `../Retro68/build-toolchain.bash --no-68k --no-carbon --multiversal`; needs
+  `libboost-{filesystem,program-options,wave,thread,regex,system,test}-dev`).
+  A fresh container won't have it.
+- Build: `RETRO68=/home/claude/Retro68-build/toolchain sh os9/build.sh` →
+  `releases/PowerPC-Display-OS9.bin` and `.dsk`. Copy those to Colin's Mac's
+  `releases/` with `device_commit_files` (releases/ isn't in git).
+- Test the core without a Mac: `sh os9/test/run.sh` (Linux, against the fake
+  Macs). It can't be run in an emulator here (no Mac OS 9 image).
+- Multiversal puts the whole Toolbox in `Multiverse.h`; it lacks
+  `Microseconds` (declared in mac9.c) and MacTCP's UDP parameter block
+  (`UDPiopb9`, custom). Everything imports from InterfaceLib only.
+- The Mac app finds OS 9 Macs by UDP broadcast "PPCD?" on port 5960
+  (`g4_probe_classic`); OS 9 has no Bonjour and can't resolve `.local` names,
+  which is why the Share window prints the M1's IP for it.
+- Colin installs it by downloading the .bin in an OS 9 browser from the Share
+  window's address; StuffIt Expander decodes it. No automatic updates.
+- Attach `PowerPC-Display-OS9.bin` to releases too; the updaters ignore it.
+
 ## Checking work here (Linux cloud session)
 
 - Swift can't be compiled here. Review it carefully, because Colin's build
